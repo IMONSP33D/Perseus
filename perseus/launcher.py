@@ -1,12 +1,15 @@
-"""perseus.py, Phase 0: wait for the download, start vLLM, prove it answers.
+"""perseus.py: boot the box and serve the model with the safe tool loop.
+
+Boot order, cheapest failure first:
+  1. socket guard + gateway, then the refusal self-test (~1 s, fails closed)
+     before any GPU time is spent
+  2. wait for the download preflight started
+  3. SearXNG and vLLM under the supervisor (restarts with backoff)
+  4. first token (timed), then one test tool call that must come back parsed
+  5. the terminal console (the dashboard replaces it in Phase 1)
 
 Reads only perseus.resolved.toml (no secrets). vLLM runs on 127.0.0.1 with a
-random per-boot API key passed through its environment, offline (no Hub
-access, no token), in its own process group so Ctrl-C stops everything.
-
-Later phases add the supervisor, the Perseus server and the dashboard; this
-stub ends in a terminal chat so the Phase 0 gate (serve a model on a fresh
-box, measure boot-to-first-token) can be checked by hand.
+random per-boot API key in its environment, offline, with no HF token.
 """
 
 from __future__ import annotations
@@ -15,24 +18,33 @@ import argparse
 import json
 import os
 import secrets
-import signal
 import socket
-import subprocess
 import sys
 import time
 import tomllib
 import urllib.error
 import urllib.request
-from collections import deque
 from pathlib import Path
 
-from . import LOG_DIR, RESOLVED_PATH, ROOT, STATE_DIR
+from . import LOG_DIR, RESOLVED_PATH, ROOT, STATE_DIR, searxng, selftest, socketguard
 from .download import MARKER
+from .engine import Engine, EngineSettings
+from .feed import Feed
+from .gateway import Gateway
+from .llm import LLMClient, LLMError
+from .searxng import SearchClient
+from .session import Recorder
+from .supervisor import ProcessSpec, Supervisor
 from .timing import instance_age_seconds, record, report
+from .tools import ToolContext, UserTools, load_builtin
 
 STATUS_PATH = STATE_DIR / "download-status.json"
 VLLM_LOG = LOG_DIR / "vllm.log"
+SEARXNG_LOG = LOG_DIR / "searxng.log"
+GATEWAY_LOG = LOG_DIR / "gateway.jsonl"
+USER_TOOLS = ROOT / "tools"
 SECRET_ENV = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_API_TOKEN")
+DEPTHS = {"quick": 5, "standard": 20, "deep": 50}
 
 TOOL_TEST = {
     "type": "function",
@@ -44,7 +56,7 @@ TOOL_TEST = {
 }
 
 
-def say(msg: str) -> None:
+def say(msg: str = "") -> None:
     print(msg, flush=True)
 
 
@@ -62,7 +74,7 @@ def load_resolved(path: Path = RESOLVED_PATH) -> dict:
         die(f"{path.name} not found", "run bash preflight.sh first")
 
 
-# --------------------------------------------------------------------------- vLLM command
+# --------------------------------------------------------------------------- vLLM process
 
 def build_vllm_cmd(r: dict, port: int, fast_start: bool = False) -> list[str]:
     """`vllm serve` flags from the resolved config.
@@ -110,13 +122,34 @@ def vllm_env(api_key: str) -> dict[str, str]:
     return env
 
 
+def explain_crash(log_text: str, r: dict) -> list[str]:
+    from .supervisor import OOM_MARKERS
+    if any(m in log_text for m in OOM_MARKERS):
+        return [f"vLLM ran out of GPU memory at context {r['vllm']['max_model_len']:,}",
+                "set [model] max_context lower in perseus.toml, or smaller weights (quantization), "
+                "then re-run bash preflight.sh --check"]
+    if "parser" in log_text.lower() and "invalid choice" in log_text.lower():
+        return ["vLLM rejected the tool or reasoning parser name",
+                "set [model] tool_parser / reasoning_parser (see `vllm serve --help`)"]
+    return []
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
-# --------------------------------------------------------------------------- waiting
+def vllm_healthy(port: int, key: str) -> bool:
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/health", headers={"Authorization": f"Bearer {key}"})
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=3) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+# --------------------------------------------------------------------------- waiting and progress
 
 def wait_for_download(r: dict, poll: float = 2.0) -> None:
     model_dir = Path(r["model"]["path"])
@@ -179,233 +212,205 @@ def last_log_line(path: Path) -> str:
         return ""
 
 
-def tail(path: Path, n: int = 40) -> str:
-    try:
-        with path.open(errors="replace") as f:
-            return "".join(deque(f, n))
-    except OSError:
-        return "(no log)"
-
-
-OOM_MARKERS = ("CUDA out of memory", "OutOfMemoryError", "No available memory for the cache blocks",
-               "insufficient memory", "larger than the available KV cache")
-
-
-def explain_crash(log_text: str, r: dict) -> list[str]:
-    if any(m in log_text for m in OOM_MARKERS):
-        return [f"vLLM ran out of GPU memory at context {r['vllm']['max_model_len']:,}",
-                "set [model] max_context lower in perseus.toml, or smaller weights (quantization), "
-                "then re-run bash preflight.sh --check"]
-    if "parser" in log_text.lower() and "invalid choice" in log_text.lower():
-        return ["vLLM rejected the tool or reasoning parser name",
-                "set [model] tool_parser / reasoning_parser (see `vllm serve --help`)"]
-    return ["see the log above and logs/vllm.log"]
-
-
-def http(port: int, key: str, path: str, body: dict | None = None, timeout: float = 120):
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}{path}",
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        method="POST" if body is not None else "GET")
-    return urllib.request.urlopen(req, timeout=timeout)
-
-
-def wait_healthy(proc: subprocess.Popen, port: int, key: str, r: dict, expected_gib: float) -> float:
-    t0 = time.monotonic()
-    while True:
-        if proc.poll() is not None:
-            log = tail(VLLM_LOG)
-            print("\n" + log, file=sys.stderr)
-            die(f"vLLM exited with code {proc.returncode} while loading", *explain_crash(log, r))
-        try:
-            with http(port, key, "/health", timeout=3) as resp:
-                if resp.status == 200:
-                    say("")
-                    return time.monotonic() - t0
-        except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
-            pass
+def load_progress(expected_gib: float):
+    def show(elapsed: float):
         used = gpu_memory_used()
         mem = ""
         if used and expected_gib:
             pct = min(100, 100 * (min(used) / 2 ** 30) / expected_gib)
             mem = f"  GPU memory {min(used) / 2 ** 30:.0f}/{expected_gib:.0f} GiB weights ({pct:.0f}%)"
-        line = last_log_line(VLLM_LOG)
-        print(f"\r\033[K  loading {time.monotonic() - t0:5.0f}s{mem}  {line[:70]}", end="", flush=True)
-        time.sleep(2)
+        print(f"\r\033[K  loading {elapsed:5.0f}s{mem}  {last_log_line(VLLM_LOG)[:70]}", end="", flush=True)
+    return show
 
 
 # --------------------------------------------------------------------------- checks
 
-def stream_chat(port: int, key: str, model: str, messages: list, max_tokens: int = 1024, on_text=None):
-    """Stream a chat completion. Returns (text, seconds to first token)."""
-    t0 = time.monotonic()
-    first = None
-    out = []
-    body = {"model": model, "messages": messages, "stream": True, "max_tokens": max_tokens}
-    with http(port, key, "/v1/chat/completions", body, timeout=600) as resp:
-        for raw in resp:
-            line = raw.decode(errors="replace").strip()
-            if not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if data == "[DONE]":
-                break
-            delta = (json.loads(data).get("choices") or [{}])[0].get("delta", {})
-            piece = delta.get("content") or ""
-            thought = delta.get("reasoning_content") or delta.get("reasoning") or ""
-            if (piece or thought) and first is None:
-                first = time.monotonic() - t0
-            if on_text:
-                if thought:
-                    on_text(thought, True)
-                if piece:
-                    on_text(piece, False)
-            out.append(piece)
-    return "".join(out), first if first is not None else time.monotonic() - t0
-
-
-def tool_call_check(port: int, key: str, model: str, parser: str) -> None:
+def tool_call_check(llm: LLMClient, parser: str) -> tuple[bool, str]:
     """Fail closed: a model whose tool calls come back as plain text can't use any tool."""
-    body = {"model": model, "max_tokens": 512, "tools": [TOOL_TEST], "tool_choice": "auto",
-            "messages": [{"role": "user", "content": "What time is it in UTC? Use the get_time tool."}]}
     try:
-        with http(port, key, "/v1/chat/completions", body, timeout=300) as resp:
-            msg = json.loads(resp.read())["choices"][0]["message"]
-    except (urllib.error.URLError, KeyError, ValueError) as e:
-        die(f"tool-call test request failed: {e}")
-    calls = msg.get("tool_calls") or []
-    if not calls or calls[0].get("function", {}).get("name") != "get_time":
-        snippet = (msg.get("content") or "").strip().replace("\n", " ")[:160]
-        die(f"tool-call test: the model's call wasn't parsed by the {parser!r} parser",
-            f"model replied: {snippet or '(empty)'}",
-            "set [model] tool_parser in perseus.toml to the right parser for this family")
-    say(f"  ✓ tool-call test: parsed {calls[0]['function']['name']}() with the {parser} parser")
+        reply = llm.chat([{"role": "user", "content": "What time is it in UTC? Use the get_time tool."}],
+                         tools=[TOOL_TEST], max_tokens=512)
+    except LLMError as e:
+        return False, f"test request failed: {e}"
+    names = [c["function"]["name"] for c in reply.tool_calls]
+    if names[:1] == ["get_time"]:
+        return True, f"get_time() parsed by the {parser} parser"
+    snippet = (reply.content or "").strip().replace("\n", " ")[:160]
+    return False, (f"the call wasn't parsed by the {parser!r} parser; model replied: {snippet or '(empty)'}. "
+                   "Set [model] tool_parser in perseus.toml")
 
 
-def repl(port: int, key: str, model: str) -> None:
-    say("\nTerminal chat (Phase 0 test harness). /exit or Ctrl-D to stop Perseus, /reset to clear.\n")
-    history: list[dict] = []
-    state = {"thinking": False}
-
-    def show(text: str, is_thought: bool):
-        if is_thought and not state["thinking"]:
-            state["thinking"] = True
-            print("\033[2m", end="")
-        if not is_thought and state["thinking"]:
-            state["thinking"] = False
-            print("\033[0m\n", end="")
-        print(text, end="", flush=True)
-
-    while True:
-        try:
-            q = input("you › ").strip()
-        except EOFError:
-            say("")
-            return
-        if q in ("/exit", "/quit"):
-            return
-        if q == "/reset":
-            history.clear()
-            say("  (cleared)")
-            continue
-        if not q:
-            continue
-        history.append({"role": "user", "content": q})
-        print("model › ", end="", flush=True)
-        try:
-            text, ttft = stream_chat(port, key, model, history, max_tokens=4096, on_text=show)
-        except (urllib.error.URLError, OSError) as e:
-            say(f"\n  ✗ request failed: {e}")
-            history.pop()
-            continue
-        if state["thinking"]:
-            state["thinking"] = False
-            print("\033[0m", end="")
-        say(f"\n\033[2m  (first token {ttft:.2f}s)\033[0m")
-        history.append({"role": "assistant", "content": text})
+def print_selftest(rep: selftest.Report, verbose: bool = False) -> None:
+    say(f"  {'✓' if rep.passed else '✗'} self-test: {rep.summary()}")
+    for c in rep.cases:
+        if verbose or not c.ok:
+            mark = "✓" if c.ok else ("✗" if c.critical else "!")
+            say(f"      {mark} {c.name}: {c.detail}")
 
 
 # --------------------------------------------------------------------------- main
 
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="python perseus.py")
+    p.add_argument("--ask", metavar="QUESTION", help="answer one question through the engine and gateway, then exit")
+    p.add_argument("--selftest", action="store_true", help="run the gateway refusal checks and exit")
+    p.add_argument("--replay", metavar="EXPORT.json", help="re-run a saved session offline (no GPU, no network)")
     p.add_argument("--fast-start", action="store_true", help="skip CUDA graph capture (faster load)")
-    p.add_argument("--no-repl", action="store_true", help="serve until Ctrl-C without the terminal chat")
+    p.add_argument("--no-repl", action="store_true", help="serve until Ctrl-C without the terminal console")
     p.add_argument("--timings", action="store_true", help="print the latest boot timings and exit")
     p.add_argument("--print-cmd", action="store_true", help="print the vLLM command and exit")
     args = p.parse_args(argv)
 
     if args.timings:
-        say(report())
-        return
+        return say(report())
+    if args.replay:
+        return run_replay(Path(args.replay))
     r = load_resolved()
-    port = free_port()
+    vllm_port = free_port()
     if args.print_cmd:
-        say(" ".join(build_vllm_cmd(r, port, args.fast_start)))
-        return
+        return say(" ".join(build_vllm_cmd(r, vllm_port, args.fast_start)))
+
+    key = secrets.token_urlsafe(32)  # per boot, held only by this process and vLLM
+    search_port = int(r["search"]["port"])
+    limits = r.get("limits", {})
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1. the walls first ------------------------------------------------------
+    gateway = Gateway(timeout_s=limits.get("fetch_timeout_s", 15), max_response_kb=limits.get("max_response_kb", 2048),
+                      exact_secrets=(key,), log_path=GATEWAY_LOG)
+    refused: list[str] = []
+    socketguard.install({vllm_port, search_port}, on_refuse=refused.append)
+    registry = load_builtin()
+    user_tools = UserTools(USER_TOOLS, registry)
+    for change in user_tools.refresh():
+        say(f"  tools: {change}")
+    ports = {"vLLM": vllm_port, "SearXNG": search_port, "Perseus": int(r["server"]["port"])}
+    rep = selftest.run(gateway, ports, registry, reach_url="https://example.com/", tool_dirs=[USER_TOOLS])
+    refused.clear()  # the self-test's own probe isn't a real refusal
+    if args.selftest:
+        print_selftest(rep, verbose=True)
+        sys.exit(0 if rep.passed else 1)
 
     model = r["model"]["id"]
     say(f"\033[1mPerseus\033[0m · {model} on {r['hardware']['summary']} · TP={r['vllm']['tensor_parallel_size']}, "
         f"{r['vllm']['weights']}, context {r['vllm']['max_model_len']:,}")
+    print_selftest(rep)
+    if not rep.passed:
+        die("the web gateway failed its refusal checks; Perseus won't start (fails closed)",
+            *[f"{c.name}: {c.detail}" for c in rep.failures])
     if r["profile"]["small_gpu"]:
         say(f"  Small-GPU profile: on — {r['profile']['small_gpu_reason']}")
     for w in r.get("notes", {}).get("warnings", []):
         say(f"  ! {w}")
 
+    # 2. weights --------------------------------------------------------------
     t_wait = time.monotonic()
     wait_for_download(r)
-    waited = time.monotonic() - t_wait
-    if waited > 5:
-        record("wait_for_download", waited)
+    if time.monotonic() - t_wait > 5:
+        record("wait_for_download", time.monotonic() - t_wait)
 
-    key = secrets.token_urlsafe(32)  # per boot, held only by this process and vLLM
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    cmd = build_vllm_cmd(r, port, args.fast_start)
-    with VLLM_LOG.open("w") as log:
-        log.write("$ " + " ".join(cmd) + "\n")
-        log.flush()
-        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=vllm_env(key),
-                                cwd=ROOT, start_new_session=True)
+    # 3. processes ------------------------------------------------------------
+    def on_state(name, m):
+        if m.state == "restarting":
+            say(f"\n  ! {name} restarting (attempt {m.restarts} of {m.spec.max_restarts}): {m.reason}")
+        elif m.state == "up" and m.restarts:
+            say(f"\n  ✓ {name} back up")
+        elif m.state == "failed":
+            say(f"\n  ✗ {name} failed: {m.reason}\n{m.tail}")
 
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # unwinds into the finally below
+    sup = Supervisor(on_state=on_state)
+    max_restarts = int(r.get("backend", {}).get("max_restarts", 3))
+    search = SearchClient(search_port)
+    sx_cmd, sx_env = searxng.command(ROOT)
+    have_searxng = Path(sx_cmd[0]).exists()
+    if have_searxng:
+        sup.add(ProcessSpec("SearXNG", sx_cmd, {**os.environ, **sx_env}, SEARXNG_LOG, search.healthy,
+                            ready_timeout_s=90, max_restarts=max_restarts))
+    sup.add(ProcessSpec("vLLM", build_vllm_cmd(r, vllm_port, args.fast_start), vllm_env(key), VLLM_LOG,
+                        lambda: vllm_healthy(vllm_port, key), cwd=ROOT, max_restarts=max_restarts,
+                        explain=lambda log: explain_crash(log, r)))
     try:
+        if have_searxng:
+            sup.start("SearXNG")
+        sup.start("vLLM")
         say(f"  starting vLLM (log: {VLLM_LOG.relative_to(ROOT)})")
-        load_s = wait_healthy(proc, port, key, r, r["vllm"].get("weight_gib_per_gpu", 0))
+        t_load = time.monotonic()
+        m = sup.wait_ready("vLLM", load_progress(r["vllm"].get("weight_gib_per_gpu", 0)))
+        say("")
+        if m.state != "up":
+            die(f"vLLM didn't start: {m.reason}", *m.hints[1:], code=1)
+        load_s = time.monotonic() - t_load
         record("model_load", load_s)
         say(f"  ✓ vLLM ready in {load_s:.0f}s")
+        if have_searxng:
+            sx = sup.wait_ready("SearXNG")
+            say("  ✓ SearXNG up" if sx.state == "up" else f"  ! SearXNG not up ({sx.reason}); web_search unavailable")
+        else:
+            say("  ! SearXNG isn't installed (run bash preflight.sh); web_search unavailable")
 
-        _, ttft = stream_chat(port, key, model, [{"role": "user", "content": "Reply with one word: ready"}],
-                              max_tokens=256)
+        # 4. first token and the parse check -----------------------------------
+        llm = LLMClient(vllm_port, key, model)
+        first = llm.chat([{"role": "user", "content": "Reply with one word: ready"}], max_tokens=256)
+        ttft = first.first_token_s or 0.0
         record("first_token", ttft)
         age = instance_age_seconds()
         if age is not None:
             record("boot_to_first_token", age)
-        say(f"  ✓ first token in {ttft:.2f}s"
-            + (f" · {age / 60:.1f} min since the instance started" if age is not None else ""))
-
-        tool_call_check(port, key, model, r["vllm"]["tool_call_parser"])
+        say(f"  ✓ first token in {ttft:.2f}s" + (f" · {age / 60:.1f} min since the instance started" if age else ""))
+        ok, detail = tool_call_check(llm, r["vllm"]["tool_call_parser"])
+        if not ok:
+            die(f"tool-call test: {detail}")
+        say(f"  ✓ tool-call test: {detail}")
         say("\n" + report())
-        if args.no_repl:
-            say("\nServing. Ctrl-C to stop.")
-            proc.wait()
-            die(f"vLLM exited with code {proc.returncode}", *explain_crash(tail(VLLM_LOG), r))
-        repl(port, key, model)
+
+        # 5. the engine ---------------------------------------------------------
+        prof = r["profile"]
+        depths = {k: int(prof.get(f"lookups_{k}", v)) for k, v in DEPTHS.items()}
+        recorder = Recorder(meta={"model": model, "hardware": r["hardware"]["summary"], "vllm": r["vllm"]})
+        engine = Engine(llm, registry, ToolContext(gateway=gateway, search=search, limits=limits), Feed(),
+                        EngineSettings(lookup_limit=depths[limits.get("research_depth", "standard")],
+                                       tool_result_tokens=prof.get("tool_result_tokens") or None,
+                                       max_context=int(r["vllm"]["max_model_len"]), small_gpu=bool(prof["small_gpu"])),
+                        recorder=recorder)
+        from .console import Console, feed_line
+        console = Console(engine, depths, limits.get("research_depth", "standard"), LOG_DIR, gateway,
+                          user_tools.refresh, recorder, model_dir=Path(r["model"]["path"]))
+        if args.ask:
+            print("model › ", end="", flush=True)
+            console.ask(args.ask)
+            say(f"  saved {console.export()}")
+        elif args.no_repl:
+            say("\nServing (no console). Ctrl-C to stop.")
+            while sup.procs["vLLM"].state != "failed":
+                time.sleep(1)
+            die("vLLM failed and restarts ran out", *sup.procs["vLLM"].hints)
+        else:
+            console.loop()
+            if console.history:
+                say(f"  saved {console.export()}")
+        if refused:
+            say(f"  ! socket guard refused {len(refused)} connection(s) outside the gateway: {', '.join(refused[:5])}")
     except KeyboardInterrupt:
         pass
     finally:
-        stop_vllm(proc)
+        say("  stopping…")
+        sup.stop_all()
 
 
-def stop_vllm(proc: subprocess.Popen) -> None:
-    """Stop vLLM and its workers (one process group) on every exit path."""
-    if proc.poll() is not None:
-        return
-    say("\n  stopping vLLM…")
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-        proc.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+def run_replay(path: Path) -> None:
+    from .session import replay
+
+    def make(llm, override):
+        reg = load_builtin()
+        return Engine(llm, reg, ToolContext(), Feed(), EngineSettings(), tool_override=override)
+
+    rows = replay(path, make)
+    for i, row in enumerate(rows, 1):
+        mark = "=" if row["same"] else "≠"
+        say(f"{i:3}. {mark} {row['user']}")
+        if not row["same"]:
+            say(f"       recorded: {row['recorded_answer']}\n       replayed: {row['replayed_answer']}")
+        if row["refused"] or row["blocked"]:
+            say(f"       refused {row['refused']}, blocked {row['blocked']}")
+    same = sum(r["same"] for r in rows)
+    say(f"\n{same}/{len(rows)} turns replayed with the same answer")
