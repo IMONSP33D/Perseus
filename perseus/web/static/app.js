@@ -61,6 +61,8 @@
     activeId: null,
     streams: {},             // chat id -> { controller }
     closing: {},             // chat id -> close-out deadline (ms), while the model wraps up
+    feedOpenTurns: {},       // chat id -> Set of earlier question numbers opened in the feed
+    feedCleared: store.get('feedCleared', {}),   // chat id -> last event id hidden by Clear (display only)
     thinkOpen: {},           // message id -> bool
     menuOpen: false,
     attachments: [],
@@ -402,7 +404,9 @@
     relayout();
     if (!visible) return;
     const c = active();
-    const events = (c && c.feed) || [];
+    const all = (c && c.feed) || [];
+    const cleared = (c && ui.feedCleared[c.id]) || 0;     // Clear only hides; the chat and export keep everything
+    const events = all.filter((e) => e.id > cleared);
     $('feed-count').textContent = String(events.length);
     // lookups in the latest answer
     const lastTurn = events.reduce((n, e) => Math.max(n, e.turn), 0);
@@ -415,13 +419,61 @@
     bar.setAttribute('aria-valuemax', String(limit));
     bar.setAttribute('aria-valuenow', String(used));
     const list = $('feed-list');
-    const openIds = new Set([...list.querySelectorAll('details[open]')].map((d) => d.closest('[data-ev]').dataset.ev));
-    if (!events.length) { list.replaceChildren(h('p', { class: 'feed-empty', text: 'No tool calls yet.' })); return; }
-    list.replaceChildren(...events.slice().reverse().map((ev) => {
-      const card = feedCard(ev);
-      if (openIds.has(String(ev.id))) { const d = card.querySelector('details'); if (d) d.open = true; }
-      return card;
+    const openIds = new Set([...list.querySelectorAll('details.f-more[open]')].map((d) => d.closest('[data-ev]').dataset.ev));
+    const hidden = all.length - events.length;
+    $('clear-feed').hidden = !events.length;
+    if (!events.length) {
+      list.replaceChildren(h('p', { class: 'feed-empty' },
+        hidden ? `Cleared ${hidden} tool call${hidden === 1 ? '' : 's'}. ` : 'No tool calls yet.',
+        hidden ? h('button', { type: 'button', class: 'link-btn', onclick: () => setCleared(c, 0) }, 'Show them') : null));
+      return;
+    }
+    // One group per question. The current question stays open; earlier ones fold up as soon as a new
+    // question is sent (its number is on the answer the server created), and open again on a click.
+    const current = Math.max(lastTurn, currentTurn(c));
+    const turns = [...new Set(events.map((e) => e.turn))].sort((a, b) => b - a);
+    const opened = ui.feedOpenTurns[c.id] || (ui.feedOpenTurns[c.id] = new Set());
+    const card = (ev) => {
+      const el = feedCard(ev);
+      if (openIds.has(String(ev.id))) { const d = el.querySelector('details'); if (d) d.open = true; }
+      return el;
+    };
+    list.replaceChildren(...turns.map((t) => {
+      const evs = events.filter((e) => e.turn === t).reverse();
+      if (t === current) return h('div', { class: 'fgroup-now' }, ...evs.map(card));
+      const open = opened.has(t);
+      const bad = evs.filter((e) => e.status === 'blocked' || e.status === 'refused' || e.status === 'error').length;
+      const q = questionFor(c, t);
+      return h('div', { class: 'fgroup' + (open ? ' open' : '') },
+        h('button', { type: 'button', class: 'fgroup-head', 'aria-expanded': String(open),
+          onclick: () => { open ? opened.delete(t) : opened.add(t); renderFeed(); } },
+          h('span', { class: 'fgroup-q', text: q || 'Earlier question' }),
+          h('span', { class: 'fgroup-n', text: `${evs.length} call${evs.length === 1 ? '' : 's'}` + (bad ? ` · ${bad} not OK` : '') }),
+          (() => { const ch = icon('chevron'); ch.classList.add('chev'); return ch; })()),
+        open ? h('div', { class: 'fgroup-body' }, ...evs.map(card)) : null);
     }));
+  }
+
+  // The question number of the answer running (or last run) in this chat: tool calls of earlier
+  // questions fold up the moment a new one is sent, before its first tool call arrives.
+  function currentTurn(c) {
+    const m = c && [...c.messages].reverse().find((x) => x.role === 'assistant' && x.turn);
+    return m ? m.turn : 0;
+  }
+  function questionFor(c, turn) {
+    const i = c.messages.findIndex((x) => x.role === 'assistant' && x.turn === turn);
+    const u = i > 0 && c.messages[i - 1].role === 'user' ? c.messages[i - 1].text : '';
+    return u.replace(/\s+/g, ' ').trim().slice(0, 80);
+  }
+  function setCleared(c, upTo) {
+    if (upTo) ui.feedCleared[c.id] = upTo; else delete ui.feedCleared[c.id];
+    store.set('feedCleared', ui.feedCleared);
+    renderFeed();
+  }
+  function clearFeed() {
+    const c = active();
+    if (!c || !c.feed || !c.feed.length) return;
+    setCleared(c, c.feed.reduce((n, e) => Math.max(n, e.id), 0));
   }
 
   function upsertEvent(chat, ev) {
@@ -538,7 +590,8 @@
             chat.title = ev.chat.title;
             const row = ui.list.find((x) => x.id === chat.id);
             if (row) { row.title = chat.title; row.busy = true; }
-            if (chat.id === ui.activeId) { renderMessages(); renderHeader(); scrollToBottom(); }
+            delete ui.feedOpenTurns[chat.id];       // a new question folds up every earlier one
+            if (chat.id === ui.activeId) { renderMessages(); renderHeader(); renderFeed(); scrollToBottom(); }
             renderChatList();
           } else if (ev.type === 'text' && current) {
             if (current.phase !== 'closing') current.phase = ev.thought ? 'thinking' : 'answering';
@@ -852,6 +905,7 @@
   $('apply').addEventListener('click', applyModel);
   $('send').addEventListener('click', onSend);
   $('closeout').addEventListener('click', onCloseOut);
+  $('clear-feed').addEventListener('click', clearFeed);
   $('attach').addEventListener('click', () => $('file-input').click());
   $('file-input').addEventListener('change', (e) => { addFiles([...e.target.files]); e.target.value = ''; });
   composer.addEventListener('input', () => { autosize(); renderComposer(); });

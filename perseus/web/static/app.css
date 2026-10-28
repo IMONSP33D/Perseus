@@ -353,6 +353,24 @@ textarea::placeholder { color: var(--placeholder); }
 .bar-fill { height: 6px; width: 0; border-radius: 999px; background: var(--primary); transition: width .3s; }
 .feed-list { flex: 1; overflow-y: auto; padding: 14px 20px 20px; display: flex; flex-direction: column; gap: 12px; }
 .feed-empty { margin: 0; padding: 8px 0; font-size: 14px; color: var(--muted); }
+.feed-clear {
+  margin-left: auto; height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font-size: 13px; font-weight: 600;
+}
+.feed-clear:hover { background: var(--track); }
+.feed-clear[hidden] { display: none; }
+.fgroup-now { display: flex; flex-direction: column; gap: 12px; }
+.fgroup { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.fgroup-head {
+  width: 100%; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: none; border-radius: 14px;
+  background: transparent; color: var(--text); text-align: left; font-size: 13px;
+}
+.fgroup-head:hover { background: var(--track); }
+.fgroup-q { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.fgroup-n { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.fgroup-head .chev { flex: none; color: var(--muted); transition: transform .15s; }
+.fgroup.open .fgroup-head .chev { transform: rotate(180deg); }
+.fgroup-body { display: flex; flex-direction: column; gap: 12px; padding: 0 10px 10px; }
 .fcard { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
 .fcard.fresh { animation: fresh .6s ease-out; }
 @keyframes fresh { from { border-color: var(--primary); } }

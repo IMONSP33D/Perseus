@@ -283,7 +283,8 @@ class Dashboard:
         msg = {"id": f"m{now:.6f}", "role": "assistant", "content": "", "reasoning": "", "streaming": True,
                "started": now, "think_secs": None, "tool_ids": [], "lookups": 0,
                "limit": opts.lookup_limit, "usage": {}, "stopped": False, "error": None,
-               "phase": "thinking", "closed": None, "truncated": False}
+               "phase": "thinking", "closed": None, "truncated": False,
+               "turn": chat.engine._turn + 1}      # run_turn numbers this answer next; the feed groups by it
         if not chat.messages:
             chat.title = " ".join(text.split())[:48] or "New chat"
         chat.messages += [user_msg, msg]

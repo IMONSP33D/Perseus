@@ -70,6 +70,8 @@ Then open the printed link. The token is exchanged for a session cookie, so late
 | Search engines | The SearXNG engines asked for each search. |
 | Model server | Live state from the supervisor. Apply & restart is offered only when Memory changed. |
 | Tool feed | Every call with its status (OK, Blocked, Refused, Error, Cached, Stopped), reason, lookup count and warning badge. Details shows the exact arguments and the text the model received. |
+| Tool feed grouping | The current question's calls are listed in full; each earlier question folds into one row (its text, number of calls, how many weren't OK) the moment a new question is sent. Click a row to open it. |
+| Clear (tool feed) | Hides the calls listed so far from the feed, in this browser only; "Show them" brings them back. The chat, the model's history and "Export all chats" keep every call. |
 | View raw (under each answer) | The prompt after the chat template, token counts, and the model's raw output for every step. |
 | Attach | Text files up to 200 KB each (5 per message), added to the message as fenced blocks. |
 | Send / Stop | While an answer runs, the send button stops it; the partial answer is kept. |
