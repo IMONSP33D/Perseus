@@ -64,41 +64,56 @@ def free_port() -> int:
 
 # --------------------------------------------------------------------------- waiting and progress
 
-def wait_for_download(r: dict, paths: Paths, poll: float = 2.0) -> None:
+def wait_for_download(r: dict, paths: Paths, poll: float = 1.0) -> None:
+    """Wait for the download preflight is running, showing its live panel (from the status file)."""
+    from perseus.progress import LivePanel, open_terminal
     model_dir = Path(r["model"]["path"])
     sha = r["model"]["revision_sha"]
     status_path = paths.run / "download-status.json"
-    t0, shown_stale = time.monotonic(), False
-    while True:
+
+    def ready() -> bool:
         try:
-            if json.loads((model_dir / WEIGHTS_MARKER).read_text()).get("sha") == sha:
-                if time.monotonic() - t0 > poll:
-                    say("")
+            return json.loads((model_dir / WEIGHTS_MARKER).read_text()).get("sha") == sha
+        except (OSError, ValueError):
+            return False
+
+    if ready():
+        say(f"  ✓ weights ready: {model_dir}")
+        return
+    panel = None
+    shown_stale = False
+    try:
+        while True:
+            if ready():
+                if panel:
+                    panel.close()
                 say(f"  ✓ weights ready: {model_dir}")
                 return
-        except (OSError, ValueError):
-            pass
-        try:
-            st = json.loads(status_path.read_text())
-        except (OSError, ValueError):
-            die("the model hasn't been downloaded", "run bash preflight.sh")
-        if st.get("state") == "failed":
-            die(f"the download failed ({st.get('error')})", "re-run bash preflight.sh; it resumes")
-        if st.get("state") == "done":
-            die(f"no verified download for this model at {model_dir}",
-                "the config changed since the download, or files were removed; re-run bash preflight.sh")
-        age = time.time() - st.get("updated", 0)
-        if age > 60 and not shown_stale:
-            shown_stale = True
-            say("\n  ! download status hasn't changed for a minute; is bash preflight.sh still running?")
-        if age > 600:
-            die("no download progress for 10 minutes", "re-run bash preflight.sh")
-        have, total = st.get("bytes", 0), st.get("total") or 1
-        eta = st.get("eta")
-        eta_s = f"{int(eta // 60)}m{int(eta % 60):02d}s" if eta else "--"
-        print(f"\r\033[K  waiting for download: {have / 1e9:.1f}/{total / 1e9:.1f} GB "
-              f"({100 * have / total:.0f}%), ETA {eta_s}   ", end="", flush=True)
-        time.sleep(poll)
+            try:
+                st = json.loads(status_path.read_text())
+            except (OSError, ValueError):
+                die("the model hasn't been downloaded", "run bash preflight.sh")
+            if st.get("state") == "failed":
+                die(f"the download failed ({st.get('error')})", "re-run bash preflight.sh; it resumes")
+            if st.get("state") == "paused":
+                die("the download is paused", "run bash preflight.sh to resume it")
+            if st.get("state") == "done":
+                die(f"no verified download for this model at {model_dir}",
+                    "the config changed since the download, or files were removed; re-run bash preflight.sh")
+            age = time.time() - st.get("updated", 0)
+            if age > 600:
+                die("no download progress for 10 minutes", "re-run bash preflight.sh")
+            if panel is None:
+                say("  waiting for the model download (bash preflight.sh is running it):")
+                panel = LivePanel(open_terminal(), viewer=True)
+            if age > 60 and not shown_stale:
+                shown_stale = True
+                st["warning"] = "download status hasn't changed for a minute; is bash preflight.sh still running?"
+            panel.update(st)
+            time.sleep(poll)
+    finally:
+        if panel:
+            panel.close()
 
 
 def last_log_line(path: Path) -> str:

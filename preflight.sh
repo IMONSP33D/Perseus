@@ -62,6 +62,8 @@ DATA=""                              # known after step 3
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 TMPD="$(mktemp -d "${TMPDIR:-/tmp}/perseus-preflight.XXXXXX")"
 chmod 700 "$TMPD"
+# the live download panel draws straight on the terminal (the log gets plain lines)
+[[ -t 1 && "${TERM:-dumb}" != "dumb" ]] && export PERSEUS_LIVE=1
 exec > >(tee -a "$TMPD/preflight.log") 2>&1
 TEE_PID=$!
 TIMINGS="$TMPD/boot-times.jsonl"
