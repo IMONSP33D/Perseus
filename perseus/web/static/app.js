@@ -64,6 +64,7 @@
     feedOpenTurns: {},       // chat id -> Set of earlier question numbers opened in the feed
     feedCleared: store.get('feedCleared', {}),   // chat id -> last event id hidden by Clear (display only)
     thinkOpen: {},           // message id -> bool
+    thinkFollow: {},         // message id -> false once the reader scrolls up in a streaming thinking box
     menuOpen: false,
     attachments: [],
     pending: null,           // { context, creativity, length } chosen in settings, not yet applied
@@ -282,6 +283,11 @@
       return;
     }
     box.replaceChildren(...c.messages.map(messageNode));
+    for (const m of c.messages) {
+      if (!m.streaming) continue;
+      const el = box.querySelector(`[data-id="${CSS.escape(m.id)}"]`);
+      if (el) placeThinkBox(el, m, null);
+    }
   }
 
   function messageNode(m) {
@@ -303,7 +309,7 @@
         h('button', { type: 'button', class: 'think-toggle', 'aria-expanded': String(open),
           onclick: () => { ui.thinkOpen[m.id] = !open; replaceMessage(m); } },
         brain, h('span', { class: 'think-title', text: 'Thinking Process' }), h('span', { class: 'think-status', text: status }), chev),
-        open ? h('div', { class: 'think-text' }, m.reasoning) : null));
+        open ? thinkBox(m) : null));
     }
     if (!showThink && !m.content && (stillThinking || wrapping)) kids.push(h('p', { class: 'waiting', text: wrapping ? 'Wrapping up…' : 'Thinking…' }));
     if (phase === 'tools' && !m.content) kids.push(h('p', { class: 'waiting', text: 'Using tools…' }));
@@ -311,12 +317,37 @@
     // later steps (after a web search) think again below text that is already shown
     if (m.content && (phase === 'tools' || (!showThink && (stillThinking || wrapping))))
       kids.push(h('p', { class: 'waiting', text: wrapping ? 'Wrapping up…' : phase === 'tools' ? 'Using tools…' : 'Thinking…' }));
-    if (!m.streaming && !m.content && !m.error && hasReasoning)
+    if (!m.streaming && !m.content && !m.error && !m.stopped && hasReasoning)
       kids.push(h('p', { class: 'note-warn', text: 'No answer came back; the thinking is above. Ask again, or raise Length or Thinking.' }));
     if (!m.streaming) kids.push(footer(m));
     return h('div', { class: 'msg-ai', 'data-id': m.id },
       h('span', { class: 'avatar' }, h('img', { src: '/assets/mark.png', alt: '' })),
       h('div', { class: 'ai-body' }, kids));
+  }
+
+  // The thinking box follows new text while it streams, unless the reader has scrolled up in it;
+  // scrolling back to the bottom (or "Jump to latest") follows again.
+  function thinkBox(m) {
+    const box = h('div', { class: 'think-text', 'data-think': m.id }, m.reasoning);
+    const live = m.streaming && m.phase !== 'answering';
+    if (!live) return box;
+    const jump = h('button', { type: 'button', class: 'think-jump', hidden: ui.thinkFollow[m.id] !== false,
+      onclick: () => { ui.thinkFollow[m.id] = true; box.scrollTop = box.scrollHeight; jump.hidden = true; } }, 'Jump to latest ↓');
+    box.addEventListener('scroll', () => {
+      if (box.dataset.restoring) return;          // our own scroll, not the reader's
+      const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+      ui.thinkFollow[m.id] = atEnd;
+      jump.hidden = atEnd;
+    });
+    return h('div', { class: 'think-live' }, box, jump);
+  }
+  function placeThinkBox(el, m, prevTop) {
+    const box = el.querySelector('.think-text');
+    if (!box) return;
+    box.dataset.restoring = '1';
+    if (m.streaming && ui.thinkFollow[m.id] !== false) box.scrollTop = box.scrollHeight;
+    else if (prevTop != null) box.scrollTop = prevTop;
+    requestAnimationFrame(() => { delete box.dataset.restoring; });
   }
 
   function footer(m) {
@@ -345,7 +376,13 @@
       for (const id of rafPending) {
         const msg = c && c.messages.find((x) => x.id === id);
         const old = $('messages').querySelector(`[data-id="${CSS.escape(id)}"]`);
-        if (msg && old) old.replaceWith(messageNode(msg));
+        if (msg && old) {
+          const oldBox = old.querySelector('.think-text');
+          const prevTop = oldBox ? oldBox.scrollTop : null;
+          const el = messageNode(msg);
+          old.replaceWith(el);
+          placeThinkBox(el, msg, prevTop);
+        }
       }
       rafPending = new Set();
       if (nearBottom) scrollToBottom();

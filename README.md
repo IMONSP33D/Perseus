@@ -60,7 +60,7 @@ Then open the printed link. The token is exchanged for a session cookie, so late
 | Control | Effect |
 | --- | --- |
 | Internet Access (toggle, header pill) | Off: web tools are neither offered to the model nor run, and the gateway's kill switch is on. |
-| Show Thinking | Shows or hides the Thinking Process panel (display only). |
+| Show Thinking | Shows or hides the Thinking Process panel (display only). Opened while the model thinks, the panel follows the newest text; scroll up to read and it holds still, with "Jump to latest" to follow again. |
 | Sandbox Mode | Disabled: local code execution comes with the VM sandbox in a later release. |
 | Thinking: Off / Low / Medium / High | Shown only for models whose chat template thinks. Off sends `enable_thinking: false`; for gpt-oss the level is also sent as `reasoning_effort`. Each level is a thinking budget on top of Length (Low 2k, Medium 8k, High 32k tokens): past it Perseus wraps up (as Close out does, without the 10 s limit) and the answer says "Thinking budget reached". |
 | Context ring | Tokens used by the last answer (prompt plus output, as vLLM reported) out of the current context. |

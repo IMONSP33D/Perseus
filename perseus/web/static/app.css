@@ -208,6 +208,14 @@ textarea::placeholder { color: var(--placeholder); }
   margin: 0 16px; padding: 14px 0 16px; border-top: 1px solid var(--divider); font-size: 14px; line-height: 1.65;
   color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow-y: auto;
 }
+.think-live { position: relative; }
+.think-jump {
+  position: absolute; right: 16px; bottom: 12px; height: 32px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 13px; font-weight: 600;
+  box-shadow: 0 4px 12px var(--shadow);
+}
+.think-jump:hover { background: var(--track); }
+.think-jump[hidden] { display: none; }
 .waiting { margin: 0; font-size: 14px; color: var(--muted); }
 .answer { display: flex; flex-direction: column; gap: 10px; font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
 .answer p { margin: 0; }
