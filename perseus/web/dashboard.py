@@ -31,10 +31,11 @@ PERSONAS = {
 }
 CREATIVITY = {"precise": 0.2, "balanced": 0.7, "creative": 1.0}
 LENGTH = {"short": 1024, "medium": 4096, "long": 16384}
-THINKING = ("off", "low", "medium", "high")
+THINKING = ("off", "low", "medium", "high", "max")
 # Thinking budget per answer, on top of Length. Past it Perseus wraps up (see Engine.run_turn), so
 # the levels mean something even for models whose template has no effort setting (Qwen3).
-THINK_BUDGET = {"off": 0, "low": 2048, "medium": 8192, "high": 32768}
+# Max: thinking may use everything a request allows (half the context) minus the answer's room.
+THINK_BUDGET = {"off": 0, "low": 4096, "medium": 16384, "high": 32768, "max": None}
 CONTEXT_STEPS = (("8k", 8192), ("32k", 32768), ("128k", 131072))
 MAX_PROMPT_CHARS = 8000
 MAX_MESSAGE_CHARS = 400_000
@@ -252,10 +253,13 @@ class Dashboard:
             else:
                 extra["chat_template_kwargs"] = {"enable_thinking": True}
                 if self.info.get("reasoning_effort"):
-                    extra["reasoning_effort"] = s.thinking
+                    extra["reasoning_effort"] = "high" if s.thinking == "max" else s.thinking
         cap = max(512, int(self.info["context"]) // 2)
         answer = min(LENGTH[s.length], cap)
-        think = THINK_BUDGET[s.thinking] if self.info.get("thinks") else 0
+        think = 0
+        if self.info.get("thinks") and s.thinking != "off":
+            think = THINK_BUDGET[s.thinking] or max(0, cap - answer)
+            think = min(think, max(0, cap - answer))     # never more than a request can hold
         return TurnOptions(allow_web=s.internet, lookup_limit=self.depths[s.depth], persona=persona or None,
                            temperature=CREATIVITY[s.creativity], max_tokens=min(answer + think, cap),
                            think_tokens=think or None, answer_tokens=answer,
@@ -284,7 +288,8 @@ class Dashboard:
                "started": now, "think_secs": None, "tool_ids": [], "lookups": 0,
                "limit": opts.lookup_limit, "usage": {}, "stopped": False, "error": None,
                "phase": "thinking", "closed": None, "truncated": False,
-               "turn": chat.engine._turn + 1}      # run_turn numbers this answer next; the feed groups by it
+               "turn": chat.engine._turn + 1,     # run_turn numbers this answer next; the feed groups by it
+               "think_used": 0, "think_budget": opts.think_tokens}
         if not chat.messages:
             chat.title = " ".join(text.split())[:48] or "New chat"
         chat.messages += [user_msg, msg]
@@ -298,13 +303,15 @@ class Dashboard:
         def on_text(piece: str, thought: bool):
             if msg["phase"] != "closing":
                 msg["phase"] = "thinking" if thought else "answering"
+            ev = {"type": "text", "text": piece, "thought": thought}
             if thought:
                 msg["reasoning"] += piece
+                msg["think_used"] = ev["think_used"] = chat.engine.thought_tokens
             else:
                 if not msg["content"] and msg["reasoning"] and msg["think_secs"] is None:
                     msg["think_secs"] = round(time.time() - msg["started"], 1)
                 msg["content"] += piece
-            q.put({"type": "text", "text": piece, "thought": thought})
+            q.put(ev)
 
         def on_event(ev: ToolEvent):
             if ev.status != "running" and ev.id not in msg["tool_ids"]:

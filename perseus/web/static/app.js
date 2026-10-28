@@ -330,14 +330,24 @@
     const open = !!ui.thinkOpen[m.id];
     const kids = [];
     if (showThink) {
-      const status = wrapping ? (m.content ? 'Writing final answer…' : 'Wrapping up…') : stillThinking ? 'Thinking…'
-        : (m.think_secs != null ? `Thought for ${Math.max(1, Math.round(m.think_secs))}s` : '');
+      const used = m.think_used || 0, budget = m.think_budget || 0;
+      const count = budget ? `${tokensLabel(used)} / ${tokensLabel(budget)}` : (used ? `${tokensLabel(used)} tokens` : '');
+      const status = wrapping ? (m.content ? 'Writing final answer…' : 'Wrapping up…')
+        : stillThinking ? 'Thinking…' + (count ? ' ' + count : '')
+        : (m.think_secs != null ? `Thought for ${Math.max(1, Math.round(m.think_secs))}s` : '') + (used ? ` · ${tokensLabel(used)} tokens` : '');
+      const frac = budget ? Math.min(1, used / budget) : 0;
+      const meter = m.streaming && budget && phase !== 'answering'
+        ? h('div', { class: 'think-meter' + (frac >= 0.8 ? ' near' : ''), role: 'progressbar', 'aria-label': 'Thinking budget used',
+            'aria-valuemin': '0', 'aria-valuemax': String(budget), 'aria-valuenow': String(Math.min(used, budget)) },
+            (() => { const f = h('div', { class: 'think-meter-fill' }); f.style.width = (frac * 100).toFixed(1) + '%'; return f; })())
+        : null;   // width set from script: the CSP blocks style="" attributes
       const brain = icon('brain'); brain.classList.add('brain');
       const chev = icon('chevron'); chev.classList.add('chev');
       kids.push(h('div', { class: 'think' },
         h('button', { type: 'button', class: 'think-toggle', 'aria-expanded': String(open),
           onclick: () => { ui.thinkOpen[m.id] = !open; replaceMessage(m); } },
         brain, h('span', { class: 'think-title', text: 'Thinking Process' }), h('span', { class: 'think-status', text: status }), chev),
+        meter,
         open ? thinkBox(m) : null));
     }
     if (!showThink && !m.content && (stillThinking || wrapping)) kids.push(h('p', { class: 'waiting', text: wrapping ? 'Wrapping up…' : 'Thinking…' }));
@@ -655,7 +665,7 @@
             renderChatList();
           } else if (ev.type === 'text' && current) {
             if (current.phase !== 'closing') current.phase = ev.thought ? 'thinking' : 'answering';
-            if (ev.thought) current.reasoning += ev.text;
+            if (ev.thought) { current.reasoning += ev.text; if (ev.think_used != null) current.think_used = ev.think_used; }
             else {
               if (!current.content && current.reasoning && current.think_secs == null) current.think_secs = (Date.now() / 1000) - current.started;
               current.content += ev.text;

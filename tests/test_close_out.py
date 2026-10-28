@@ -135,3 +135,28 @@ class CloseOut(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Counting(unittest.TestCase):
+    def test_stream_tokens(self):
+        from perseus.engine.loop import stream_tokens
+        self.assertEqual(stream_tokens(" the"), 1)                 # vLLM: one token per delta
+        self.assertEqual(stream_tokens("x" * 40), 10)              # long pieces: ~4 chars per token
+
+    def test_budget_counts_tokens_not_characters(self):
+        class PerToken(ThinkingLLM):
+            def chat(self, messages, tools=None, should_stop=None, on_text=None, **k):
+                if tools is None:
+                    return super().chat(messages, tools=tools, should_stop=should_stop, on_text=on_text, **k)
+                n = 0
+                while not should_stop():
+                    on_text(" thinking", True)                    # 9 characters, 1 token each
+                    n += 1
+                self.pieces = n
+                return Reply(reasoning="…", finish_reason="stopped")
+        llm = PerToken()
+        eng, _ = engine(llm)
+        r = eng.run_turn([], "q", opts=opts(think_tokens=100))
+        self.assertEqual(r.closed, "budget")
+        self.assertEqual(llm.pieces, 101)                         # chars/3.5 would have stopped at 39
+        self.assertEqual(eng.thought_tokens, 101)

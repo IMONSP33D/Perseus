@@ -99,6 +99,7 @@ class Engine:
     tool_override: Callable[[str, dict], Any] | None = None   # replay: recorded results instead of running tools
     _stop: threading.Event = field(default_factory=threading.Event)
     _close: threading.Event = field(default_factory=threading.Event)
+    thought_tokens: int = 0                   # this answer's thinking so far (the dashboard's live counter)
     _turn: int = 0
     _opts: TurnOptions = field(default_factory=TurnOptions)
 
@@ -146,7 +147,7 @@ class Engine:
         max_tokens = o.max_tokens or s.max_answer_tokens
         usage: dict = {}
         ttft = None
-        thought_chars = 0          # this answer's thinking so far, across steps
+        self.thought_tokens = 0    # this answer's thinking so far, across steps
         answering = False          # visible text has started in the current step
 
         def result(answer, stopped, step, error=None, closed=None, truncated=False):
@@ -154,12 +155,12 @@ class Engine:
                               closed, truncated)
 
         def over_budget() -> bool:
-            return bool(o.think_tokens) and not answering and thought_chars / CHARS_PER_TOKEN > o.think_tokens
+            return bool(o.think_tokens) and not answering and self.thought_tokens > o.think_tokens
 
         def piece(text: str, thought: bool):
-            nonlocal thought_chars, answering
+            nonlocal answering
             if thought:
-                thought_chars += len(text)
+                self.thought_tokens += stream_tokens(text)
             else:
                 answering = True
             if on_text:
@@ -438,6 +439,13 @@ class Engine:
 
 
 # ---------------------------------------------------------------------- helpers
+
+def stream_tokens(piece: str) -> int:
+    """Tokens in one streamed piece. vLLM sends one token per delta; a long piece (another server,
+    or a replay) is estimated at 4 characters per token. Characters/3.5 overcounted English
+    thinking by 15-30%, so the budget ran out early."""
+    return 1 if len(piece) <= 16 else -(-len(piece) // 4)
+
 
 def _tool_msg(call: dict, content: str) -> dict:
     return {"role": "tool", "tool_call_id": call["id"], "content": content}

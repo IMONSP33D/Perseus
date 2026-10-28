@@ -208,6 +208,10 @@ textarea::placeholder { color: var(--placeholder); }
   margin: 0 16px; padding: 14px 0 16px; border-top: 1px solid var(--divider); font-size: 14px; line-height: 1.65;
   color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow-y: auto;
 }
+.think-status { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.think-meter { height: 3px; margin: -2px 16px 0; border-radius: 999px; background: var(--track); overflow: hidden; }
+.think-meter-fill { height: 100%; border-radius: 999px; background: var(--primary); transition: width .3s; }
+.think-meter.near .think-meter-fill { background: var(--amber); }
 .think-live { position: relative; }
 .think-jump {
   position: absolute; right: 16px; bottom: 12px; height: 32px; padding: 0 12px; border-radius: 999px;

@@ -212,7 +212,18 @@ class ServerTests(unittest.TestCase):
     def test_thinking_gets_its_own_budget(self):
         _, chat = self.c.req("POST", "/api/chats", {})
         self.c.stream(chat["id"], "hello")                 # defaults: Length medium, Thinking medium
-        self.assertEqual(self.llm.requests[-1]["max_tokens"], 4096 + 8192)
+        # 32k context: a request holds up to 16k, so Medium's 16k thinking is trimmed to fit the 4k answer
+        self.assertEqual(self.llm.requests[-1]["max_tokens"], 16384)
+        self.c.req("PATCH", "/api/settings", {"thinking": "low"})
+        _, events = self.c.stream(chat["id"], "hello")
+        self.assertEqual(self.llm.requests[-1]["max_tokens"], 4096 + 4096)
+        start = next(e for e in events if e["type"] == "start")
+        self.assertEqual(start["message"]["think_budget"], 4096)
+        thought = [e for e in events if e["type"] == "text" and e["thought"]]
+        self.assertEqual(thought[0]["think_used"], 1)                       # the live counter rides on each piece
+        self.c.req("PATCH", "/api/settings", {"thinking": "max"})
+        self.c.stream(chat["id"], "hello")
+        self.assertEqual(self.llm.requests[-1]["max_tokens"], 16384)        # all a request can hold
         self.c.req("PATCH", "/api/settings", {"thinking": "off"})
         self.c.stream(chat["id"], "hello")
         self.assertEqual(self.llm.requests[-1]["max_tokens"], 4096)
@@ -229,7 +240,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(req["extra"]["chat_template_kwargs"], {"enable_thinking": False})
         self.assertEqual(req["max_tokens"], 1024)
         self.assertEqual(self.dash.turn_options().engines, ["duckduckgo"])
-        for bad in ({"thinking": "max"}, {"nope": 1}, {"engines": {"google": True}}, {"internet": "yes"},
+        for bad in ({"thinking": "extreme"}, {"nope": 1}, {"engines": {"google": True}}, {"internet": "yes"},
                     {"custom_prompt": "x" * 9000}):
             self.assertEqual(self.c.req("PATCH", "/api/settings", bad)[0], 400, bad)
 
