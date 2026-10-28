@@ -140,8 +140,10 @@ def load_progress(expected_gib: float, log: Path, gpus: int = 1):
         mem = ""
         if used and expected_gib:
             gib = loading_gib(used, gpus)
-            pct = min(100, 100 * gib / expected_gib)
-            mem = f"  GPU memory {gib:.0f}/{expected_gib:.0f} GiB weights ({pct:.0f}%)"
+            if gib < expected_gib:
+                mem = f"  GPU memory {gib:.0f}/{expected_gib:.0f} GiB weights ({100 * gib / expected_gib:.0f}%)"
+            else:   # past the weights, vLLM reserves the rest of its share for the KV cache
+                mem = f"  weights loaded ({expected_gib:.0f} GiB) · GPU memory {gib:.0f} GiB with KV cache"
         print(f"\r\033[K  loading {elapsed:5.0f}s{mem}  {last_log_line(log)[:70]}", end="", flush=True)
     return show
 
