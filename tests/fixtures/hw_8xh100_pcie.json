@@ -1,0 +1,10 @@
+{"gpus": [{"name": "NVIDIA H100 80GB HBM3", "vram_gib": 79.65, "compute_cap": [9, 0]},
+          {"name": "NVIDIA H100 80GB HBM3", "vram_gib": 79.65, "compute_cap": [9, 0]},
+          {"name": "NVIDIA H100 80GB HBM3", "vram_gib": 79.65, "compute_cap": [9, 0]},
+          {"name": "NVIDIA H100 80GB HBM3", "vram_gib": 79.65, "compute_cap": [9, 0]},
+          {"name": "NVIDIA H100 80GB HBM3", "vram_gib": 79.65, "compute_cap": [9, 0]},
+          {"name": "NVIDIA H100 80GB HBM3", "vram_gib": 79.65, "compute_cap": [9, 0]},
+          {"name": "NVIDIA H100 80GB HBM3", "vram_gib": 79.65, "compute_cap": [9, 0]},
+          {"name": "NVIDIA H100 80GB HBM3", "vram_gib": 79.65, "compute_cap": [9, 0]}],
+ "driver_version": "580.82.07", "cuda_version": "13.0", "interconnect": "pcie", "cpu_cores": 128, "ram_gib": 2000,
+ "disks": [{"mount": "/", "free_gib": 100, "nvme": null}, {"mount": "/ephemeral", "free_gib": 6000, "nvme": true}]}

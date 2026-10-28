@@ -1,0 +1,14 @@
+# Blocks commits that contain secrets (HF tokens, API keys). Install once per clone:
+#   uvx pre-commit install
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      - id: no-perseus-toml
+        name: perseus.toml holds secrets and must never be committed
+        entry: perseus.toml must not be committed (only perseus.example.toml)
+        language: fail
+        files: ^perseus(\.resolved)?\.toml$

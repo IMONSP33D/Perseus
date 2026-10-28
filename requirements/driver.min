@@ -1,0 +1,4 @@
+# Minimum NVIDIA driver for the pinned vLLM/torch wheels.
+# VERIFY IN PHASE 0: set this to the floor for the CUDA runtime that
+# torch==2.13.0 bundles (CUDA 13.x wheels need driver >= 580; 12.8 needs >= 570).
+580.0

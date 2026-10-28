@@ -1,0 +1,3 @@
+{"gpus": [{"name": "NVIDIA GeForce RTX 4090", "vram_gib": 23.99, "compute_cap": [8, 9]}],
+ "driver_version": "580.82.07", "cuda_version": "13.0", "cpu_cores": 16, "ram_gib": 64,
+ "disks": [{"mount": "/", "free_gib": 180, "nvme": null}, {"mount": "/workspace", "free_gib": 400, "nvme": true}]}

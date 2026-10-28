@@ -1,0 +1,30 @@
+# SearXNG settings for Perseus, filled in by `python -m perseus.preflight searxng`.
+# Only Perseus talks to this instance: loopback only, JSON on, limiter and image proxy off.
+use_default_settings:
+  engines:
+    keep_only:
+@ENGINES@
+
+general:
+  instance_name: "perseus-search"
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+server:
+  bind_address: "127.0.0.1"
+  port: @PORT@
+  secret_key: "@SECRET@"
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 8.0

@@ -1,0 +1,9 @@
+# Secrets and per-box state: never committed
+perseus.toml
+perseus.resolved.toml
+.perseus/
+logs/
+models/
+.venv/
+__pycache__/
+*.pyc

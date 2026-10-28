@@ -1,0 +1,31 @@
+{
+ "repo_id": "Qwen/Qwen2.5-32B-Instruct-AWQ",
+ "revision_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "weight_bytes": 19340000000,
+ "params_total": null,
+ "native_dtype": "int4",
+ "quant_method": "awq",
+ "num_layers": 64,
+ "num_attention_heads": 40,
+ "num_kv_heads": 8,
+ "head_dim": 128,
+ "max_positions": 32768,
+ "model_type": "qwen2",
+ "architectures": [
+  "Qwen2ForCausalLM"
+ ],
+ "kv_lora_rank": null,
+ "qk_rope_head_dim": null,
+ "thinks": false,
+ "chat_template_tools": true,
+ "download": {
+  "model-00001-of-00005.safetensors": 3868000000,
+  "model-00002-of-00005.safetensors": 3868000000,
+  "model-00003-of-00005.safetensors": 3868000000,
+  "model-00004-of-00005.safetensors": 3868000000,
+  "model-00005-of-00005.safetensors": 3868000000,
+  "config.json": 900,
+  "tokenizer.json": 11400000,
+  "tokenizer_config.json": 9700
+ }
+}

@@ -1,0 +1,27 @@
+[project]
+name = "perseus"
+version = "0.1.0"
+description = "Turn a rented Linux GPU box into a safe tool-calling dashboard for any open model."
+readme = "README.md"
+requires-python = ">=3.11,<3.15"   # vLLM 0.32 supports 3.11-3.14
+license = { text = "Proprietary" }
+
+# Base set: installed first, in seconds, so the config, hardware and Hub
+# checks run before anything heavy. Exact pins; regenerate uv.lock after changes.
+dependencies = [
+  "huggingface_hub==2.3.0",
+  "hf_xet==1.7.0",
+  "nvidia-ml-py==13.615.71",
+]
+
+[project.optional-dependencies]
+# Installed only after the checks pass, still before the model download.
+serve = [
+  "vllm==0.32.0",   # pulls torch==2.13.0
+]
+
+[tool.uv]
+package = false
+
+[tool.perseus]
+python = "3.12"
