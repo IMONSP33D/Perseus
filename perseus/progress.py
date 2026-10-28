@@ -142,7 +142,8 @@ def render(st: dict, width: int = 80, color: bool = True, viewer: bool = False) 
         done = [f for f in files if f["state"] == "done"]
         active = [f for f in files if f["state"] == "active"]
         waiting = [f for f in files if f["state"] == "waiting"]
-        lines.append(f"  {dim('files')} {len(done)} {dim('of')} {len(files)} {dim('done')}")
+        n_done = max(len(done), min(st.get("files_done") or 0, len(files)))
+        lines.append(f"  {dim('files')} {n_done} {dim('of')} {len(files)} {dim('done')}")
         name_w = max(16, min(48, width - 40))
         for f in sorted(active, key=lambda f: -(f["have"] / (f["size"] or 1)))[:4]:
             ff, fe = bar(f["have"] / (f["size"] or 1), 12)
@@ -157,6 +158,8 @@ def render(st: dict, width: int = 80, color: bool = True, viewer: bool = False) 
     notes = []
     if st.get("disk_free") is not None:
         notes.append(f"{st['disk_free'] / 1024 ** 3:.0f} GiB free on {st.get('disk_mount', 'disk')}")
+    if state == "downloading" and st.get("received"):
+        notes.append(f"{fmt_gb(st['received'])} GB received")
     if state == "downloading":
         notes.append("Ctrl-C stops waiting; the download carries on in preflight" if viewer
                      else "Ctrl-C pauses; finished files are kept")

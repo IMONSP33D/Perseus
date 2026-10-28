@@ -97,6 +97,63 @@ class FileProgress(unittest.TestCase):
                               "c.safetensors": ("waiting", 0)})
 
 
+    def test_hub_2_3_temp_names(self):
+        # huggingface_hub 2.3: <file>.<etag>.<random8>.incomplete; the index must not claim the shard's bytes
+        d = Path(tempfile.mkdtemp())
+        files = {"model.safetensors": 300, "model.safetensors.index.json": 40}
+        root = d / ".cache/huggingface/download"
+        root.mkdir(parents=True)
+        (root / "model.safetensors.e7a1.1a2b3c4d.incomplete").write_bytes(b"x" * 120)
+        (root / "model.safetensors.index.json.9f00.5e6f7a8b.incomplete").write_bytes(b"x" * 7)
+        fp = {f["name"]: (f["state"], f["have"]) for f in dl.file_progress(d, files)}
+        self.assertEqual(fp, {"model.safetensors": ("active", 120), "model.safetensors.index.json": ("active", 7)})
+
+
+class HubProgress(unittest.TestCase):
+    """Xet keeps chunks in memory and writes each file at the end: progress must come from the hub's counters."""
+
+    def test_progress_while_nothing_is_on_disk(self):
+        seen = {}
+        release = threading.Event()
+
+        def snapshot_download(repo_id, revision, allow_patterns, local_dir, token, max_workers, tqdm_class):
+            # the same bars, in the same way, as huggingface_hub 2.3's snapshot_download
+            transfer = tqdm_class(desc="Downloading bytes", total=0, initial=0, unit="B")
+            written = tqdm_class(desc="Reconstructing (incomplete total...)", total=0, initial=0, unit="B")
+            with tqdm_class(total=1, desc="Fetching 1 files") as files_bar:
+                for _ in range(8):
+                    transfer.update(GB // 8)
+                    written.update(GB // 10)
+                    written.set_postfix_str("x", refresh=False)
+                    time.sleep(0.1)
+                time.sleep(1.2)   # status.json is rewritten once a second
+                seen["mid"] = __import__("json").loads(status.read_text())
+                release.wait(5)
+                p = Path(local_dir) / "m.safetensors"
+                with open(p, "wb") as f:
+                    f.truncate(GB)
+                files_bar.update(1)
+            return local_dir
+
+        mod = types.ModuleType("huggingface_hub")
+        mod.snapshot_download = snapshot_download
+        sys.modules["huggingface_hub"] = mod
+        d = Path(tempfile.mkdtemp())
+        status = d / "status.json"
+        threading.Timer(3.0, release.set).start()
+        try:
+            dl.download("a/b", "s" * 40, {"m.safetensors": GB}, d / "m", None, status, 20, panel=None, tick=0.05)
+        finally:
+            del sys.modules["huggingface_hub"]
+        mid = seen["mid"]
+        self.assertEqual(mid["state"], "downloading")
+        self.assertGreater(mid["bytes"], 0.5 * GB)          # from the hub, though no file is on disk yet
+        self.assertGreater(mid["rate"], 0)
+        self.assertIsNotNone(mid["eta"])
+        self.assertGreater(mid["received"], 0.5 * GB)
+        self.assertLess(mid["bytes"], GB)
+
+
 class Pause(unittest.TestCase):
     def test_ctrl_c_pauses_and_records_it(self):
         mod = types.ModuleType("huggingface_hub")

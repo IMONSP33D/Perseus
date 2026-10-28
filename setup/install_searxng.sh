@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install_searxng.sh <dest> — SearXNG at the pinned commit, in its own venv under <dest>.
 # Run by preflight.sh with <dest> = <data>/searxng; safe to re-run (skips what's done).
-# Its settings.yml is written afterwards by `python -m setup.check_config searxng-settings`.
+# Its settings.yml is written afterwards by `python3 -m setup.check_config searxng-settings`.
 set -Eeuo pipefail
 
 DEST="${1:?usage: install_searxng.sh <dest dir>}"

@@ -110,6 +110,7 @@ fi
 unset HF_TOKEN HUGGING_FACE_HUB_TOKEN
 export HF_HOME="$TMPD/hf"                 # metadata checks only; the download uses <data>/run/hf
 export HF_HUB_DISABLE_TELEMETRY=1
+export PYTHONUNBUFFERED=1                 # progress lines reach the screen through tee as they happen
 export HF_XET_HIGH_PERFORMANCE=1          # Xet parallel chunked downloads
 export UV_PROJECT_ENVIRONMENT="$ROOT/$VENV"
 export UV_PYTHON_PREFERENCE=only-managed  # same Python on every image
@@ -232,6 +233,6 @@ else
   "$PY" -m setup.download "${CFG[@]}" "${PASS[@]}" || exit $?   # records its own timing
 fi
 
-START="python perseus.py"
+START="python3 perseus.py"
 [[ "$CONFIG" == "$PWD/perseus.toml" ]] || START+=" --config $CONFIG"
 bold $'\n'"Preflight done. Data in $DATA. Start Perseus with:  $START"

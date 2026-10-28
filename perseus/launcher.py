@@ -174,7 +174,7 @@ class RunFiles:
 # --------------------------------------------------------------------------- main
 
 def main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(prog="python perseus.py")
+    p = argparse.ArgumentParser(prog="python3 perseus.py")
     p.add_argument("--config", type=Path, default=None, help="perseus.toml to use (default: ./perseus.toml)")
     p.add_argument("--data", type=Path, default=None, help="data directory (default: the one preflight recorded)")
     p.add_argument("--ask", metavar="QUESTION", help="answer one question through the engine and gateway, then exit")
@@ -266,12 +266,12 @@ def main(argv: list[str] | None = None) -> None:
         if m.state == "restarting" and m.intentional:
             if last_state.get(name) != "restarting":
                 say(f"\n  ↻ {name} restarting with new settings")
-        elif m.state == "restarting":
+        elif m.state == "restarting" and last_state.get(name) != "restarting":   # once per attempt
             say(f"\n  ! {name} restarting (attempt {m.restarts} of {m.spec.max_restarts}): {m.reason}")
         elif m.state == "up" and m.restarts:
             say(f"\n  ✓ {name} back up")
         elif m.state == "failed":
-            say(f"\n  ✗ {name} failed: {m.reason}\n{m.tail}")
+            say(f"\n  ✗ {name} failed: {m.reason}\n{m.tail}      (full log: {m.spec.log_path})")
 
     sup = Supervisor(on_state=on_state)
 

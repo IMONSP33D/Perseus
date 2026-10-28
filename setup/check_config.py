@@ -296,7 +296,7 @@ def main(argv: list[str] | None = None) -> None:
     except ConfigError as e:
         print(f"  ✗ {e}", file=sys.stderr)
         sys.exit(EXIT["config"])
-    p = argparse.ArgumentParser(prog="python -m setup.check_config")
+    p = argparse.ArgumentParser(prog="python3 -m setup.check_config")
     p.add_argument("--config", type=Path, default=default_config_path(), help="perseus.toml to use")
     sub = p.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("check")

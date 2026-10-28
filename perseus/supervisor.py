@@ -10,6 +10,7 @@ Each process runs in its own process group, so stopping it stops its workers too
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -154,9 +155,12 @@ class Supervisor:
             if m.intentional or m.proc is not proc:
                 continue  # a restart someone asked for replaced this process
             m.last_exit = code
-            m.tail = tail(m.spec.log_path)
-            m.hints = explain_crash(m.tail, m.spec)
-            m.reason = m.hints[0] if m.hints else f"exited with code {code}"
+            attempt = last_run(m.spec.log_path)          # this attempt's whole log, not just the end
+            cause = root_cause(attempt)
+            m.tail = cause_excerpt(attempt, cause) if cause else tail(m.spec.log_path)
+            m.hints = explain_crash(attempt, m.spec)
+            m.reason = m.hints[0] if m.hints else (f"exited with code {code}: {cause}" if cause
+                                                   else f"exited with code {code}")
             if m.restarts >= m.spec.max_restarts:
                 self._fail(m, f"{m.reason}; gave up after {m.restarts} restart(s)")
                 return
@@ -211,6 +215,47 @@ def tail(path: Path, n: int = 40) -> str:
             return "".join(deque(f, n))
     except OSError:
         return "(no log)"
+
+
+def last_run(path: Path, max_lines: int = 3000) -> str:
+    """The log of the most recent attempt: everything after the last `$ <command>` line _spawn writes."""
+    try:
+        with path.open(errors="replace") as f:
+            lines = list(deque(f, max_lines))
+    except OSError:
+        return ""
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].startswith("$ "):
+            return "".join(lines[i + 1:])
+    return "".join(lines)
+
+
+# The last line of a Python traceback, optionally behind vLLM's "(EngineCore_DP0 pid=…)" prefix.
+_EXC = re.compile(r"^(?:\([^)]*\)\s*)?((?:[A-Za-z_][\w.]*\.)?[A-Z]\w*(?:Error|Exception|Exit|Interrupt)\b(?::.*)?)$")
+_WRAPPERS = ("Engine core initialization failed", "EngineCore failed to start", "Worker failed",
+             "WorkerProc initialization failed")
+
+
+def root_cause(log_text: str) -> str:
+    """The first real exception in a crash log, skipping vLLM's 'see root cause above' wrappers."""
+    found = []
+    for line in log_text.splitlines():
+        m = _EXC.match(line.strip())
+        if m:
+            found.append(m.group(1).strip())
+    for exc in found:
+        if not any(w in exc for w in _WRAPPERS):
+            return exc[:400]
+    return found[0][:400] if found else ""
+
+
+def cause_excerpt(log_text: str, cause: str, before: int = 14) -> str:
+    """The traceback lines leading up to the root cause, for the terminal."""
+    lines = log_text.splitlines()
+    for i, line in enumerate(lines):
+        if cause[:120] in line:
+            return "\n".join(lines[max(0, i - before): i + 1]) + "\n"
+    return "\n".join(lines[-before:]) + "\n"
 
 
 def explain_crash(log_text: str, spec: ProcessSpec) -> list[str]:

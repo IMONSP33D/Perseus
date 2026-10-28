@@ -5,7 +5,7 @@ Turns a blank, rented Linux GPU box into a safe tool-calling model server in two
 ```bash
 git clone <this repo> perseus && cd perseus
 cp perseus.example.toml perseus.toml      # set [model] id and [secrets] hf_token
-bash preflight.sh && python perseus.py
+bash preflight.sh && python3 perseus.py
 ```
 
 **The model proposes, Perseus disposes.** The model never reaches the internet directly. Every tool call is parsed, validated against its schema, checked against the gateway rules and shown in the tool feed.
@@ -147,7 +147,7 @@ These were written against vLLM 0.32.0 and SearXNG without running them on a GPU
 - [ ] Measured KV-cache size is close to preflight's estimate; tune `RESERVE_*` if not.
 - [ ] Thinking controls: Qwen3 honours `chat_template_kwargs.enable_thinking`, and gpt-oss honours `reasoning_effort` (`perseus/web/dashboard.py`).
 - [ ] View raw renders the prompt with the model's own tokenizer (needs `transformers`, installed with vLLM).
-- [ ] Record three cold boots: `python perseus.py --timings`.
+- [ ] Record three cold boots: `python3 perseus.py --timings`.
 
 ## Layout
 

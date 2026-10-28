@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start Perseus: `python perseus.py` after `bash preflight.sh`.
+"""Start Perseus: `python3 perseus.py` after `bash preflight.sh`.
 
 Runs under the project's .venv whichever python you call it with.
 """

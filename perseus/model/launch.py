@@ -77,11 +77,22 @@ def vllm_env(api_key: str, run_dir: Path | None = None) -> dict[str, str]:
 
 
 def explain_crash(log_text: str, r: dict) -> list[str]:
+    low = log_text.lower()
+    if "no available memory for the cache blocks" in low or "larger than the available kv cache memory" in low \
+            or "max seq len" in low and "kv cache" in low:
+        return [f"the weights fit but there is no room left for a {r['vllm']['max_model_len']:,}-token KV cache",
+                "set [model] max_context lower in perseus.toml (or smaller weights), "
+                "then re-run bash preflight.sh --check"]
+    from perseus.supervisor import root_cause
+    cause = root_cause(log_text).lower()      # only the real error line: "fp8" is all over a normal log
+    if "fp8" in cause and ("not supported" in cause or "compute capability" in cause or "unsupported" in cause):
+        return ["this GPU can't run these FP8 weights",
+                "use a BF16 or a GPTQ/AWQ repo for [model] id, then re-run bash preflight.sh"]
     if any(m in log_text for m in OOM_MARKERS):
         return [f"vLLM ran out of GPU memory at context {r['vllm']['max_model_len']:,}",
                 "set [model] max_context lower in perseus.toml, or smaller weights (quantization), "
                 "then re-run bash preflight.sh --check"]
-    if "parser" in log_text.lower() and "invalid choice" in log_text.lower():
+    if "parser" in low and "invalid choice" in low:
         return ["vLLM rejected the tool or reasoning parser name",
                 "set [model] tool_parser / reasoning_parser (see `vllm serve --help`)"]
     return []

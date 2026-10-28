@@ -1,6 +1,6 @@
 """Download exactly the planned files with the Xet parallel downloader.
 
-    python -m setup.download [--config perseus.toml]     (preflight.sh runs this as its last step)
+    python3 -m setup.download [--config perseus.toml]     (preflight.sh runs this as its last step)
 
 Reads the plan `check` wrote to <data>/run/download-plan.json and fetches into
 <data>/weights/<org>/<model>/. Progress (bytes, MB/s, ETA) goes to the terminal
@@ -69,23 +69,38 @@ class Paused(Exception):
     """Ctrl-C during the download: finished files are kept, the next run resumes."""
 
 
+def _partial_name(rel: str, names: list[str]) -> str | None:
+    """The planned file an in-progress download belongs to (the longest planned name it starts with).
+
+    huggingface_hub 2.3 writes <file>.<etag>.<random8>.incomplete, older versions
+    <file>.<etag>.incomplete, so match on the name prefix rather than a fixed suffix.
+    """
+    best = None
+    for n in names:
+        if rel.startswith(n + ".") and (best is None or len(n) > len(best)):
+            best = n
+    return best
+
+
 def file_progress(dest: Path, files: dict[str, int]) -> list[dict]:
     """Per-file state: done (final file at full size), active (bytes in flight) or waiting.
 
-    huggingface_hub downloads into <dest>/.cache/huggingface/download/<file>.<etag>.incomplete
-    and moves the file into place when it finishes. VERIFY on huggingface_hub 2.3 + hf_xet.
+    huggingface_hub downloads into <dest>/.cache/huggingface/download/<file>.….incomplete
+    and moves the file into place when it finishes.
     """
     partial: dict[str, int] = {}
+    names = list(files)
     dl_root = dest / ".cache" / "huggingface" / "download"
     if dl_root.is_dir():
-        for root, _, names in os.walk(dl_root):
-            for n in names:
+        for root, _, found in os.walk(dl_root):
+            for n in found:
                 if n.endswith(".incomplete"):
                     full = Path(root) / n
-                    rel = str(full.relative_to(dl_root))
-                    rel = re.sub(r"\.[^./]+\.incomplete$", "", rel)
+                    name = _partial_name(str(full.relative_to(dl_root)), names)
+                    if name is None:
+                        continue
                     try:
-                        partial[rel] = max(partial.get(rel, 0), full.stat().st_size)
+                        partial[name] = max(partial.get(name, 0), full.stat().st_size)
                     except OSError:
                         pass
     out = []
@@ -101,6 +116,69 @@ def file_progress(dest: Path, files: dict[str, int]) -> list[dict]:
             have = min(partial.get(name, 0), size)
             out.append({"name": name, "size": size, "have": have, "state": "active" if have else "waiting"})
     return out
+
+
+class HubCounters:
+    """Live byte counts from huggingface_hub itself, independent of what is on disk yet.
+
+    snapshot_download(tqdm_class=...) feeds every file into two shared bars:
+    "Downloading bytes" (received from the network) and "Reconstructing…" (written
+    to disk; Xet buffers chunks, so this lags), plus "Fetching N files" (files
+    finished). `tqdm_class()` returns a silent stand-in that records them here.
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.received = 0      # network bytes (Xet dedups/compresses, so can be < file bytes)
+        self.written = 0       # file bytes reconstructed on disk this run
+        self.files_done = 0
+
+    def snapshot(self) -> tuple[int, int, int]:
+        with self.lock:
+            return self.received, self.written, self.files_done
+
+    def tqdm_class(self):
+        counters = self
+
+        class Bar:
+            def __init__(self, *args, desc: str = "", total=None, initial=0, **kwargs):
+                d = (desc or "").removeprefix("[dry-run] ")
+                self.kind = ("received" if d.startswith("Downloading bytes") else
+                             "written" if d.startswith("Reconstructing") else
+                             "files_done" if d.startswith("Fetching") else None)
+                self.n, self.total, self.desc = initial or 0, total, desc
+                self.format_dict = {"rate": None}
+                if initial:
+                    self.update(0)
+
+            def update(self, n=1):
+                n = int(n or 0)
+                with counters.lock:
+                    self.n += n
+                    if self.kind:
+                        setattr(counters, self.kind, self.n)
+                return True
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def refresh(self, *a, **k): pass
+            def close(self): pass
+            def set_description(self, *a, **k): pass
+            def set_description_str(self, *a, **k): pass
+            def set_postfix_str(self, *a, **k): pass
+            def set_postfix(self, *a, **k): pass
+
+        return Bar
+
+
+def _rate(samples: list[tuple[float, int]]) -> float:
+    if len(samples) > 1 and samples[-1][0] > samples[0][0]:
+        return max(0.0, (samples[-1][1] - samples[0][1]) / (samples[-1][0] - samples[0][0]))
+    return 0.0
 
 
 def _disk(dest: Path) -> tuple[int | None, str]:
@@ -125,11 +203,13 @@ def download(repo: str, sha: str, files: dict[str, int], dest: Path, token: str 
     start_files = file_progress(dest, files)
     start_bytes = sum(f["have"] for f in start_files if f["state"] == "done")
     state = {"error": None, "done": False}
+    hub = HubCounters()
 
     def run():
         try:
             snapshot_download(repo_id=repo, revision=sha, allow_patterns=sorted(files), local_dir=str(dest),
-                              token=token, max_workers=min(32, (os.cpu_count() or 8) * 2))
+                              token=token, max_workers=min(32, (os.cpu_count() or 8) * 2),
+                              tqdm_class=hub.tqdm_class())
         except Exception as e:  # reported after the monitor loop
             state["error"] = e
         finally:
@@ -140,6 +220,7 @@ def download(repo: str, sha: str, files: dict[str, int], dest: Path, token: str 
     worker = threading.Thread(target=run, daemon=True)
     worker.start()
     samples: list[tuple[float, int]] = []   # (time, bytes): current speed over the last ~5 s
+    net: list[tuple[float, int]] = []       # (time, network bytes): speed while writes lag behind
     history: list[float] = []               # one speed per second, for the sparkline
     last_hist = t0
     warning = None
@@ -151,12 +232,18 @@ def download(repo: str, sha: str, files: dict[str, int], dest: Path, token: str 
             now = time.monotonic()
             elapsed = now - t0
             fp = file_progress(dest, files)
-            have = min(max(sum(f["have"] for f in fp), 0), total)
+            received, written, files_done = hub.snapshot()
+            # Whichever source is furthest along: files on disk, or huggingface_hub's own count.
+            have = min(max(sum(f["have"] for f in fp), start_bytes + written), total)
             samples.append((now, have))
             samples = [x for x in samples if now - x[0] <= 5.0]
-            rate = ((samples[-1][1] - samples[0][1]) / (samples[-1][0] - samples[0][0])
-                    if len(samples) > 1 and samples[-1][0] > samples[0][0] else 0.0)
-            rate_avg = max(have - start_bytes, 0) / elapsed if elapsed > 0 else 0.0
+            net.append((now, received))
+            net = [x for x in net if now - x[0] <= 5.0]
+            rate = _rate(samples)
+            if rate <= 0:                       # nothing written yet in this window: use network speed
+                rate = _rate(net)
+            done_bytes = max(have - start_bytes, received if have <= start_bytes else 0)
+            rate_avg = done_bytes / elapsed if elapsed > 0 else 0.0
             eta = (total - have) / rate if rate > 0 else ((total - have) / rate_avg if rate_avg > 0 else None)
             if now - last_hist >= 1.0:
                 last_hist = now
@@ -169,7 +256,7 @@ def download(repo: str, sha: str, files: dict[str, int], dest: Path, token: str 
             free, mount = _disk(dest)
             snap = {**base, "state": "downloading", "bytes": have, "rate": rate, "rate_avg": rate_avg, "eta": eta,
                     "elapsed": elapsed, "files": fp, "history": history, "disk_free": free, "disk_mount": mount,
-                    "warning": warning}
+                    "warning": warning, "received": received, "files_done": files_done}
             if panel:
                 panel.update(snap)
             if now - last_write >= 1.0:   # perseus.py reads this while it waits
@@ -260,7 +347,7 @@ def main(argv: list[str] | None = None) -> None:
 
     argv = list(sys.argv[1:] if argv is None else argv)
     rest, overrides = split_overrides(argv)
-    ap = argparse.ArgumentParser(prog="python -m setup.download")
+    ap = argparse.ArgumentParser(prog="python3 -m setup.download")
     ap.add_argument("--config", type=Path, default=default_config_path())
     args = ap.parse_args(rest)
     config = args.config.expanduser().absolute()
@@ -271,7 +358,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"      → {h}", file=sys.stderr)
         sys.exit(8)
 
-    print("\nModel download")
+    print("\nModel download", flush=True)
     try:
         paths = find_paths(config)
         cfg = load(config, overrides)

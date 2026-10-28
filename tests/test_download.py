@@ -13,7 +13,7 @@ def fake_hub(write_files: dict[str, int], fail: bool = False):
     mod = types.ModuleType("huggingface_hub")
     calls = {}
 
-    def snapshot_download(repo_id, revision, allow_patterns, local_dir, token, max_workers):
+    def snapshot_download(repo_id, revision, allow_patterns, local_dir, token, max_workers, tqdm_class=None):
         calls.update(repo_id=repo_id, revision=revision, allow=allow_patterns, token=token)
         if fail:
             raise ConnectionError("network down")
