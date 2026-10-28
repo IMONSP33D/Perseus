@@ -32,6 +32,9 @@ PERSONAS = {
 CREATIVITY = {"precise": 0.2, "balanced": 0.7, "creative": 1.0}
 LENGTH = {"short": 1024, "medium": 4096, "long": 16384}
 THINKING = ("off", "low", "medium", "high")
+# Thinking budget per answer, on top of Length. Past it Perseus wraps up (see Engine.run_turn), so
+# the levels mean something even for models whose template has no effort setting (Qwen3).
+THINK_BUDGET = {"off": 0, "low": 2048, "medium": 8192, "high": 32768}
 CONTEXT_STEPS = (("8k", 8192), ("32k", 32768), ("128k", 131072))
 MAX_PROMPT_CHARS = 8000
 MAX_MESSAGE_CHARS = 400_000
@@ -251,8 +254,11 @@ class Dashboard:
                 if self.info.get("reasoning_effort"):
                     extra["reasoning_effort"] = s.thinking
         cap = max(512, int(self.info["context"]) // 2)
+        answer = min(LENGTH[s.length], cap)
+        think = THINK_BUDGET[s.thinking] if self.info.get("thinks") else 0
         return TurnOptions(allow_web=s.internet, lookup_limit=self.depths[s.depth], persona=persona or None,
-                           temperature=CREATIVITY[s.creativity], max_tokens=min(LENGTH[s.length], cap),
+                           temperature=CREATIVITY[s.creativity], max_tokens=min(answer + think, cap),
+                           think_tokens=think or None, answer_tokens=answer,
                            chat_extra=extra, engines=[e for e, on in s.engines.items() if on] or None)
 
     def start_turn(self, cid: str, text: str) -> "queue.Queue[dict]":
@@ -276,13 +282,21 @@ class Dashboard:
         user_msg = {"id": f"m{now:.6f}u", "role": "user", "text": text, "at": now}
         msg = {"id": f"m{now:.6f}", "role": "assistant", "content": "", "reasoning": "", "streaming": True,
                "started": now, "think_secs": None, "tool_ids": [], "lookups": 0,
-               "limit": opts.lookup_limit, "usage": {}, "stopped": False, "error": None}
+               "limit": opts.lookup_limit, "usage": {}, "stopped": False, "error": None,
+               "phase": "thinking", "closed": None, "truncated": False}
         if not chat.messages:
             chat.title = " ".join(text.split())[:48] or "New chat"
         chat.messages += [user_msg, msg]
         q.put({"type": "start", "chat": chat.summary(), "user": user_msg, "message": msg})
 
+        def on_phase(phase: str):
+            if msg["phase"] != "closing" or phase == "closing":   # once wrapping up, it stays that way
+                msg["phase"] = phase
+                q.put({"type": "phase", "phase": msg["phase"]})
+
         def on_text(piece: str, thought: bool):
+            if msg["phase"] != "closing":
+                msg["phase"] = "thinking" if thought else "answering"
             if thought:
                 msg["reasoning"] += piece
             else:
@@ -300,13 +314,14 @@ class Dashboard:
 
         def work():
             try:
-                res = chat.engine.run_turn(chat.history, text, on_text, opts)
+                res = chat.engine.run_turn(chat.history, text, on_text, opts, on_phase=on_phase)
                 chat.history += res.messages
                 chat.turn_of[msg["id"]] = chat.engine._turn
                 chat.recorder.turn(text, res)
                 msg.update(content=res.answer if not msg["content"] else msg["content"],
                            streaming=False, lookups=res.lookups_used, usage=res.usage, stopped=res.stopped,
-                           error=res.error, ttft=res.first_token_s,
+                           error=res.error, ttft=res.first_token_s, phase=None, closed=res.closed,
+                           truncated=res.truncated,
                            duration=round(time.time() - msg["started"], 1))
                 if msg["reasoning"] and msg["think_secs"] is None:
                     msg["think_secs"] = msg["duration"]
@@ -324,6 +339,13 @@ class Dashboard:
 
     def stop(self, cid: str) -> None:
         self.get(cid).engine.stop()
+
+    def close_out(self, cid: str, seconds: float = 10.0) -> float:
+        chat = self.get(cid)
+        if not chat.busy:
+            raise BadRequest("nothing to close out: this chat isn't answering")
+        chat.engine.close_out(seconds)
+        return seconds
 
     # ------------------------------------------------------------------ raw view, export
     def raw(self, cid: str, mid: str) -> dict:

@@ -189,6 +189,34 @@ class ServerTests(unittest.TestCase):
         done = out["r"][1][-1]
         self.assertTrue(done["message"]["stopped"])
 
+    def test_close_out_wraps_up(self):
+        _, chat = self.c.req("POST", "/api/chats", {})
+        self.assertEqual(self.c.req("POST", f"/api/chats/{chat['id']}/closeout", {})[0], 400)   # nothing running
+        out = {}
+        t = threading.Thread(target=lambda: out.update(r=self.c.stream(chat["id"], "slow please")))
+        t.start()
+        time.sleep(0.3)
+        st, body = self.c.req("POST", f"/api/chats/{chat['id']}/closeout", {})
+        self.assertEqual((st, body["seconds"]), (200, 10.0))
+        t.join(5)
+        events = out["r"][1]
+        self.assertIn("closing", [e.get("phase") for e in events if e["type"] == "phase"])
+        done = events[-1]["message"]
+        self.assertEqual(done["closed"], "user")
+        self.assertFalse(done["stopped"])
+        self.assertIn("world", done["content"])                          # the wrap-up answer streamed in
+        wrap = self.llm.requests[-1]
+        self.assertEqual(wrap["tools"], [])                               # no tools while wrapping up
+        self.assertFalse(wrap["extra"]["chat_template_kwargs"]["enable_thinking"])
+
+    def test_thinking_gets_its_own_budget(self):
+        _, chat = self.c.req("POST", "/api/chats", {})
+        self.c.stream(chat["id"], "hello")                 # defaults: Length medium, Thinking medium
+        self.assertEqual(self.llm.requests[-1]["max_tokens"], 4096 + 8192)
+        self.c.req("PATCH", "/api/settings", {"thinking": "off"})
+        self.c.stream(chat["id"], "hello")
+        self.assertEqual(self.llm.requests[-1]["max_tokens"], 4096)
+
     def test_settings_shape_the_next_request(self):
         self.c.req("PATCH", "/api/settings", {"internet": False, "persona": "engineer", "creativity": "precise",
                                                "length": "short", "thinking": "off", "engines": {"wikipedia": False}})

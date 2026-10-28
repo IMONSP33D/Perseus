@@ -60,6 +60,7 @@
     chats: {},               // id -> full chat
     activeId: null,
     streams: {},             // chat id -> { controller }
+    closing: {},             // chat id -> close-out deadline (ms), while the model wraps up
     thinkOpen: {},           // message id -> bool
     menuOpen: false,
     attachments: [],
@@ -284,12 +285,16 @@
   function messageNode(m) {
     if (m.role === 'user') return h('div', { class: 'msg-user', 'data-id': m.id }, h('div', { class: 'bubble' }, m.text));
     const hasReasoning = !!(m.reasoning && m.reasoning.length);
-    const stillThinking = m.streaming && !m.content;
+    // phase comes from the server: thinking | answering | tools | closing (every step, not only the first)
+    const phase = m.streaming ? (m.phase || (m.content ? 'answering' : 'thinking')) : null;
+    const stillThinking = phase === 'thinking';
+    const wrapping = phase === 'closing';
     const showThink = ui.showThinking && hasReasoning;
     const open = !!ui.thinkOpen[m.id];
     const kids = [];
     if (showThink) {
-      const status = stillThinking ? 'Thinking…' : (m.think_secs != null ? `Thought for ${Math.max(1, Math.round(m.think_secs))}s` : '');
+      const status = wrapping ? 'Wrapping up…' : stillThinking ? 'Thinking…'
+        : (m.think_secs != null ? `Thought for ${Math.max(1, Math.round(m.think_secs))}s` : '');
       const brain = icon('brain'); brain.classList.add('brain');
       const chev = icon('chevron'); chev.classList.add('chev');
       kids.push(h('div', { class: 'think' },
@@ -298,8 +303,14 @@
         brain, h('span', { class: 'think-title', text: 'Thinking Process' }), h('span', { class: 'think-status', text: status }), chev),
         open ? h('div', { class: 'think-text' }, m.reasoning) : null));
     }
-    if (stillThinking && !showThink) kids.push(h('p', { class: 'waiting', text: 'Generating…' }));
+    if (!showThink && !m.content && (stillThinking || wrapping)) kids.push(h('p', { class: 'waiting', text: wrapping ? 'Wrapping up…' : 'Thinking…' }));
+    if (phase === 'tools' && !m.content) kids.push(h('p', { class: 'waiting', text: 'Using tools…' }));
     kids.push(h('div', { class: 'answer' }, markdown(m.content, m.streaming && !!m.content)));
+    // later steps (after a web search) think again below text that is already shown
+    if (m.content && (phase === 'tools' || (!showThink && (stillThinking || wrapping))))
+      kids.push(h('p', { class: 'waiting', text: wrapping ? 'Wrapping up…' : phase === 'tools' ? 'Using tools…' : 'Thinking…' }));
+    if (!m.streaming && !m.content && !m.error && hasReasoning)
+      kids.push(h('p', { class: 'note-warn', text: 'No answer came back; the thinking is above. Ask again, or raise Length or Thinking.' }));
     if (!m.streaming) kids.push(footer(m));
     return h('div', { class: 'msg-ai', 'data-id': m.id },
       h('span', { class: 'avatar' }, h('img', { src: '/assets/mark.png', alt: '' })),
@@ -310,6 +321,10 @@
     const bits = [];
     if (m.error) bits.push(h('span', { class: 'err', text: m.error }));
     if (m.stopped) bits.push(h('span', { text: 'Stopped' }));
+    const closed = { user: 'Closed out', budget: 'Thinking budget reached · wrapped up',
+      length: 'Ran out of room while thinking · wrapped up' }[m.closed];
+    if (closed) bits.push(h('span', { class: 'warn', text: closed }));
+    if (m.truncated) bits.push(h('span', { class: 'warn', text: m.closed === 'user' ? 'Cut off at the 10 s limit' : 'Cut off at the length limit · try Length: Long' }));
     if (m.lookups) bits.push(h('span', { text: `${m.lookups} of ${m.limit} lookups` }));
     if (m.duration != null) bits.push(h('span', { text: `${m.duration.toFixed(1)} s` }));
     const u = m.usage || {};
@@ -428,6 +443,17 @@
     send.classList.toggle('stop', busy);
     send.classList.toggle('ready', !busy && !!(composer.value.trim() || ui.attachments.length));
     send.setAttribute('aria-label', busy ? 'Stop answering' : 'Send message');
+    const close = $('closeout');
+    close.hidden = !busy;
+    const until = c && ui.closing[c.id];
+    if (busy && until) {
+      const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+      close.disabled = true;
+      close.replaceChildren(h('span', { class: 'co-long' }, left ? 'Wrapping up · ' : 'Wrapping up…'), left ? `${left}s` : '');
+    } else {
+      close.disabled = false;
+      close.textContent = 'Close out';
+    }
     const atts = $('attachments');
     atts.hidden = !ui.attachments.length;
     atts.replaceChildren(...ui.attachments.map((a, i) => h('span', { class: 'att' }, icon('file'), a.name,
@@ -459,6 +485,20 @@
     ui.attachments = [];
     autosize();
     await streamTurn(chat, text);
+  }
+
+  async function onCloseOut() {
+    const c = active();
+    if (!c || !(ui.streams[c.id] || c.busy) || ui.closing[c.id]) return;
+    try {
+      const r = await api('POST', `/api/chats/${c.id}/closeout`);
+      ui.closing[c.id] = Date.now() + (r.seconds || 10) * 1000;
+      const tick = setInterval(() => {
+        if (!ui.closing[c.id]) { clearInterval(tick); return; }
+        renderComposer();
+      }, 250);
+      renderComposer();
+    } catch (e) { banner(e.message); }
   }
 
   async function streamTurn(chat, text) {
@@ -501,11 +541,15 @@
             if (chat.id === ui.activeId) { renderMessages(); renderHeader(); scrollToBottom(); }
             renderChatList();
           } else if (ev.type === 'text' && current) {
+            if (current.phase !== 'closing') current.phase = ev.thought ? 'thinking' : 'answering';
             if (ev.thought) current.reasoning += ev.text;
             else {
               if (!current.content && current.reasoning && current.think_secs == null) current.think_secs = (Date.now() / 1000) - current.started;
               current.content += ev.text;
             }
+            if (chat.id === ui.activeId) replaceMessage(current);
+          } else if (ev.type === 'phase' && current) {
+            current.phase = ev.phase;
             if (chat.id === ui.activeId) replaceMessage(current);
           } else if (ev.type === 'tool') {
             upsertEvent(chat, ev.event);
@@ -524,6 +568,7 @@
       if (e.name !== 'AbortError') banner(e.message);
     } finally {
       delete ui.streams[chat.id];
+      delete ui.closing[chat.id];
       chat.busy = false;
       const row = ui.list.find((x) => x.id === chat.id);
       if (row) row.busy = false;
@@ -806,6 +851,7 @@
   $('discard').addEventListener('click', () => { ui.pending = null; renderSettings(); });
   $('apply').addEventListener('click', applyModel);
   $('send').addEventListener('click', onSend);
+  $('closeout').addEventListener('click', onCloseOut);
   $('attach').addEventListener('click', () => $('file-input').click());
   $('file-input').addEventListener('change', (e) => { addFiles([...e.target.files]); e.target.value = ''; });
   composer.addEventListener('input', () => { autosize(); renderComposer(); });

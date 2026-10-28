@@ -24,7 +24,8 @@ from typing import Any, Callable
 from perseus.engine.feed import Feed, ToolEvent, summarize_args
 from perseus.safety.gateway import GatewayError
 from perseus.safety.netpolicy import Blocked
-from perseus.engine.prompts import LIMIT_REACHED, UNTRUSTED_CLOSE, UNTRUSTED_OPEN, system_prompt
+from perseus.engine.prompts import (CLOSE_OUT, CLOSE_OUT_CONTINUE, LIMIT_REACHED, UNTRUSTED_CLOSE,
+                                    UNTRUSTED_OPEN, WRAP_UP, system_prompt)
 from perseus.search import SearchUnavailable
 from perseus.tools import Registry, ToolContext, ToolFailure
 
@@ -32,6 +33,9 @@ CHARS_PER_TOKEN = 3.5
 NETWORK_CODES = {"dns"}
 DEFAULT_RESULT_TOKENS = 8000
 COMPACT_EXCERPT_CHARS = 500
+CLOSE_OUT_SECONDS = 10.0
+CLOSE_OUT_TOKENS = 1024        # what 10 s can stream; the deadline ends it either way
+NOTES_CHARS = 24_000           # the tail of the thinking passed to the wrap-up request
 
 INJECTION_PATTERNS = [re.compile(p, re.I) for p in (
     r"ignore (?:all |any |the )?(?:previous|prior|above|earlier) (?:instructions|prompts|messages)",
@@ -57,6 +61,8 @@ class TurnResult:
     error: str | None = None
     usage: dict = field(default_factory=dict)    # last model reply: prompt_tokens, completion_tokens
     first_token_s: float | None = None
+    closed: str | None = None            # wrapped up early: "user" (Close out), "budget" (thinking), "length"
+    truncated: bool = False              # the answer itself hit max_tokens (or the close-out deadline)
 
 
 @dataclass
@@ -66,7 +72,9 @@ class TurnOptions:
     lookup_limit: int | None = None           # research depth
     persona: str | None = None                # system prompt lead, e.g. "You are a senior software engineer."
     temperature: float | None = None
-    max_tokens: int | None = None
+    max_tokens: int | None = None             # per model request: thinking + answer
+    think_tokens: int | None = None           # thinking budget per answer; over it, Perseus wraps up
+    answer_tokens: int | None = None          # room for the wrap-up answer (the Length setting)
     chat_extra: dict = field(default_factory=dict)   # passed to vLLM as is (thinking controls)
     engines: list[str] | None = None          # SearXNG engines for web_search
 
@@ -91,6 +99,8 @@ class Engine:
     recorder: Any = None                      # session.Recorder
     tool_override: Callable[[str, dict], Any] | None = None   # replay: recorded results instead of running tools
     _stop: threading.Event = field(default_factory=threading.Event)
+    _close: threading.Event = field(default_factory=threading.Event)
+    close_seconds: float = CLOSE_OUT_SECONDS
     _turn: int = 0
     _opts: TurnOptions = field(default_factory=TurnOptions)
 
@@ -98,6 +108,11 @@ class Engine:
     def stop(self) -> None:
         """The Stop button: ends the turn after the current step; the partial answer is kept."""
         self._stop.set()
+
+    def close_out(self, seconds: float = CLOSE_OUT_SECONDS) -> None:
+        """The Close out button: stop thinking and tools now, then `seconds` to give a final answer."""
+        self.close_seconds = seconds
+        self._close.set()
 
     def system_message(self, opts: TurnOptions | None = None) -> dict:
         o = opts or self._opts
@@ -113,8 +128,10 @@ class Engine:
 
     # ------------------------------------------------------------------ the loop
     def run_turn(self, history: list[dict], user_text: str,
-                 on_text: Callable[[str, bool], None] | None = None, opts: TurnOptions | None = None) -> TurnResult:
+                 on_text: Callable[[str, bool], None] | None = None, opts: TurnOptions | None = None,
+                 on_phase: Callable[[str], None] | None = None) -> TurnResult:
         self._stop.clear()
+        self._close.clear()
         self._turn += 1
         turn = self._turn
         self._opts = opts or TurnOptions()
@@ -128,9 +145,28 @@ class Engine:
         max_tokens = o.max_tokens or s.max_answer_tokens
         usage: dict = {}
         ttft = None
+        thought_chars = 0          # this answer's thinking so far, across steps
+        answering = False          # visible text has started in the current step
 
-        def result(answer, stopped, step, error=None):
-            return TurnResult(answer, new, events, lookups, stopped, reasoning, step, error, usage, ttft)
+        def result(answer, stopped, step, error=None, closed=None, truncated=False):
+            return TurnResult(answer, new, events, lookups, stopped, reasoning, step, error, usage, ttft,
+                              closed, truncated)
+
+        def over_budget() -> bool:
+            return bool(o.think_tokens) and not answering and thought_chars / CHARS_PER_TOKEN > o.think_tokens
+
+        def piece(text: str, thought: bool):
+            nonlocal thought_chars, answering
+            if thought:
+                thought_chars += len(text)
+            else:
+                answering = True
+            if on_text:
+                on_text(text, thought)
+
+        def should_stop() -> bool:
+            return self._stop.is_set() or self._close.is_set() or over_budget()
+
         new: list[dict] = [{"role": "user", "content": user_text}]
         events: list[ToolEvent] = []
         cache: dict[str, str] = {}
@@ -139,9 +175,43 @@ class Engine:
         max_steps = limit + s.extra_steps + 1
         limit_note_added = False
 
+        def wrap_up(why: str, partial: str, step: int):
+            """Close out: one more request, no tools and no thinking, to turn the notes into an answer."""
+            nonlocal usage
+            if on_phase:
+                on_phase("closing")
+            note = CLOSE_OUT.format(why=WRAP_UP[why], notes=reasoning[-NOTES_CHARS:].strip() or "(none)")
+            if partial.strip():
+                note += CLOSE_OUT_CONTINUE.format(partial=partial[-4000:])
+            msgs = self._fit_context([self.system_message(), *history, *new, {"role": "user", "content": note}])
+            ex = dict(extra)
+            if "chat_template_kwargs" in ex:          # a thinking model: answer straight away
+                ex["chat_template_kwargs"] = {**ex["chat_template_kwargs"], "enable_thinking": False}
+            ex.pop("reasoning_effort", None)
+            deadline = time.monotonic() + self.close_seconds if why == "user" else None
+            budget = CLOSE_OUT_TOKENS if why == "user" else (o.answer_tokens or max_tokens)
+
+            def done_yet() -> bool:
+                return self._stop.is_set() or (deadline is not None and time.monotonic() > deadline)
+            try:
+                reply = self.llm.chat(msgs, tools=None, max_tokens=budget, on_text=on_text, should_stop=done_yet,
+                                      extra=ex or None)
+            except Exception as e:
+                new.append({"role": "assistant", "content": partial or None})
+                return result(partial, False, step, f"model request failed while closing out: {e}", why)
+            usage = reply.usage or usage
+            if self.recorder:
+                self.recorder.llm(turn, step + 1, msgs, None, reply)
+            answer = partial + reply.content if partial.strip() else reply.content
+            new.append({"role": "assistant", "content": answer or None})
+            cut = reply.finish_reason in ("length", "stopped") and not self._stop.is_set()
+            return result(answer, self._stop.is_set(), step + 1, None, why, cut)
+
         for step in range(1, max_steps + 1):
             if self._stop.is_set():
                 return result(_last_text(new), True, step - 1)
+            if self._close.is_set():
+                return wrap_up("user", "", step - 1)
             limit_hit = lookups >= limit
             tools = self._offered_tools(limit_hit)
             if limit_hit and not limit_note_added and self._has_lookup_tools() and new[-1].get("role") == "tool":
@@ -150,9 +220,12 @@ class Engine:
                 new[-1] = {**new[-1], "content": new[-1]["content"] + "\n\n" + LIMIT_REACHED.format(n=limit)}
                 limit_note_added = True
             messages = self._fit_context([self.system_message(), *history, *new])
+            answering = False
+            if on_phase:
+                on_phase("thinking")
             try:
                 reply = self.llm.chat(messages, tools=tools or None, max_tokens=max_tokens,
-                                      on_text=on_text, should_stop=self._stop.is_set, extra=extra or None)
+                                      on_text=piece, should_stop=should_stop, extra=extra or None)
             except Exception as e:
                 return result(_last_text(new), False, step, f"model request failed: {e}")
             usage = reply.usage or usage
@@ -161,19 +234,39 @@ class Engine:
             if self.recorder:
                 self.recorder.llm(turn, step, messages, tools, reply)
             reasoning += reply.reasoning
+
+            # Wrap up early? Stop wins over everything; a half-streamed tool call is dropped.
+            if not self._stop.is_set():
+                why = None
+                if self._close.is_set():
+                    why = "user"
+                elif reply.finish_reason == "stopped" and over_budget():
+                    why = "budget"
+                elif reply.finish_reason == "length" and not reply.content.strip() and not reply.tool_calls:
+                    why = "length"          # all of max_tokens went on thinking
+                if why:
+                    return wrap_up(why, reply.content, step)
+
             new.append(reply.message())
             stopping = reply.finish_reason == "stopped" or self._stop.is_set()
             if not reply.tool_calls:
-                return result(reply.content, stopping, step)
+                return result(reply.content, stopping, step,
+                              truncated=reply.finish_reason == "length")
 
             for call in reply.tool_calls:
-                if stopping or self._stop.is_set():
+                closing = self._close.is_set() and not stopping
+                if stopping or self._stop.is_set() or closing:
                     # every tool call still gets a result, so the history stays valid for the next turn
-                    stopping = True
-                    ev = self.feed.start(turn, call["function"]["name"], call["function"]["arguments"], "stopped")
-                    events.append(self.feed.finish(ev, "stopped", reason="stopped by user"))
-                    new.append(_tool_msg(call, "Stopped by the user before this call ran."))
+                    stopping = stopping or self._stop.is_set()
+                    why = "skipped: wrapping up" if closing and not stopping else "stopped"
+                    ev = self.feed.start(turn, call["function"]["name"], call["function"]["arguments"], why)
+                    events.append(self.feed.finish(ev, "stopped", reason="the user closed out" if closing
+                                                   and not stopping else "stopped by user"))
+                    new.append(_tool_msg(call, "Skipped: the user asked for the final answer now." if closing
+                                         and not stopping else "Stopped by the user before this call ran."))
                     continue
+                if on_phase:
+                    on_phase("tools")
                 content, ev, counted = self._handle(turn, call, cache, lookups, limit_hit)
                 lookups += counted
                 events.append(ev)

@@ -288,6 +288,8 @@ class _Handler(BaseHTTPRequestHandler):
             if method == "POST" and rest == ("stop",):
                 d.stop(cid)
                 return self._json(200, {"stopping": True})
+            if method == "POST" and rest == ("closeout",):
+                return self._json(200, {"closing": True, "seconds": d.close_out(cid)})
             if method == "GET" and len(rest) == 2 and rest[0] == "raw":
                 return self._json(200, d.raw(cid, rest[1]))
         return self._error(404, "not found")
