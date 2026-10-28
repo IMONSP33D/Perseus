@@ -189,6 +189,7 @@ def _write_resolved(cfg: Config, hw, meta: ModelMeta, res, tool_parser, reasonin
         "vllm": {"tensor_parallel_size": res.tensor_parallel, "weights": res.weights,
                  "quantization": res.quantization or "", "dtype": res.dtype,
                  "kv_cache_dtype": res.kv_cache_dtype, "max_model_len": res.max_context,
+                 "context_capacity": min(res.context_capacity, meta.max_positions),
                  "gpu_memory_utilization": res.gpu_memory_utilization, "cpu_offload_gb": res.cpu_offload_gb,
                  "tool_call_parser": tool_parser, "reasoning_parser": reasoning_parser or "",
                  "trust_remote_code": cfg["model"]["trust_remote_code"],

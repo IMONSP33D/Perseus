@@ -29,6 +29,7 @@ from .searxng import SearchUnavailable
 from .tools import Registry, ToolContext, ToolFailure
 
 CHARS_PER_TOKEN = 3.5
+NETWORK_CODES = {"dns"}
 DEFAULT_RESULT_TOKENS = 8000
 COMPACT_EXCERPT_CHARS = 500
 
@@ -54,6 +55,20 @@ class TurnResult:
     reasoning: str = ""
     steps: int = 0
     error: str | None = None
+    usage: dict = field(default_factory=dict)    # last model reply: prompt_tokens, completion_tokens
+    first_token_s: float | None = None
+
+
+@dataclass
+class TurnOptions:
+    """Per-answer choices from the dashboard. None means "use the engine's settings"."""
+    allow_web: bool = True                    # Internet Access toggle: web tools neither offered nor run
+    lookup_limit: int | None = None           # research depth
+    persona: str | None = None                # system prompt lead, e.g. "You are a senior software engineer."
+    temperature: float | None = None
+    max_tokens: int | None = None
+    chat_extra: dict = field(default_factory=dict)   # passed to vLLM as is (thinking controls)
+    engines: list[str] | None = None          # SearXNG engines for web_search
 
 
 @dataclass
@@ -77,54 +92,79 @@ class Engine:
     tool_override: Callable[[str, dict], Any] | None = None   # replay: recorded results instead of running tools
     _stop: threading.Event = field(default_factory=threading.Event)
     _turn: int = 0
+    _opts: TurnOptions = field(default_factory=TurnOptions)
 
     # ------------------------------------------------------------------ control
     def stop(self) -> None:
         """The Stop button: ends the turn after the current step; the partial answer is kept."""
         self._stop.set()
 
-    def system_message(self) -> dict:
-        return {"role": "system", "content": system_prompt(self.registry.names(), self.settings.lookup_limit)}
+    def system_message(self, opts: TurnOptions | None = None) -> dict:
+        o = opts or self._opts
+        names = [n for n in self.registry.names() if o.allow_web or not self.registry.get(n).lookup]
+        text = system_prompt(names, self._limit(o))
+        if o.persona:
+            text = o.persona.strip() + "\n\n" + text
+        return {"role": "system", "content": text}
+
+    def _limit(self, o: TurnOptions | None = None) -> int:
+        o = o or self._opts
+        return o.lookup_limit if o.lookup_limit is not None else self.settings.lookup_limit
 
     # ------------------------------------------------------------------ the loop
     def run_turn(self, history: list[dict], user_text: str,
-                 on_text: Callable[[str, bool], None] | None = None) -> TurnResult:
+                 on_text: Callable[[str, bool], None] | None = None, opts: TurnOptions | None = None) -> TurnResult:
         self._stop.clear()
         self._turn += 1
         turn = self._turn
+        self._opts = opts or TurnOptions()
+        o = self._opts
+        limit = self._limit()
+        self.ctx.engines = o.engines
         s = self.settings
+        extra = dict(o.chat_extra)
+        if o.temperature is not None:
+            extra["temperature"] = o.temperature
+        max_tokens = o.max_tokens or s.max_answer_tokens
+        usage: dict = {}
+        ttft = None
+
+        def result(answer, stopped, step, error=None):
+            return TurnResult(answer, new, events, lookups, stopped, reasoning, step, error, usage, ttft)
         new: list[dict] = [{"role": "user", "content": user_text}]
         events: list[ToolEvent] = []
         cache: dict[str, str] = {}
         lookups = 0
         reasoning = ""
-        max_steps = s.lookup_limit + s.extra_steps + 1
+        max_steps = limit + s.extra_steps + 1
         limit_note_added = False
 
         for step in range(1, max_steps + 1):
             if self._stop.is_set():
-                return TurnResult(_last_text(new), new, events, lookups, True, reasoning, step - 1)
-            limit_hit = lookups >= s.lookup_limit
+                return result(_last_text(new), True, step - 1)
+            limit_hit = lookups >= limit
             tools = self._offered_tools(limit_hit)
             if limit_hit and not limit_note_added and self._has_lookup_tools() and new[-1].get("role") == "tool":
                 # Appended to the last tool result: a mid-conversation system
                 # message is rejected by some chat templates.
-                new[-1] = {**new[-1], "content": new[-1]["content"] + "\n\n" + LIMIT_REACHED.format(n=s.lookup_limit)}
+                new[-1] = {**new[-1], "content": new[-1]["content"] + "\n\n" + LIMIT_REACHED.format(n=limit)}
                 limit_note_added = True
             messages = self._fit_context([self.system_message(), *history, *new])
             try:
-                reply = self.llm.chat(messages, tools=tools or None, max_tokens=s.max_answer_tokens,
-                                      on_text=on_text, should_stop=self._stop.is_set)
+                reply = self.llm.chat(messages, tools=tools or None, max_tokens=max_tokens,
+                                      on_text=on_text, should_stop=self._stop.is_set, extra=extra or None)
             except Exception as e:
-                return TurnResult(_last_text(new), new, events, lookups, False, reasoning, step,
-                                  error=f"model request failed: {e}")
+                return result(_last_text(new), False, step, f"model request failed: {e}")
+            usage = reply.usage or usage
+            if ttft is None:
+                ttft = reply.first_token_s
             if self.recorder:
                 self.recorder.llm(turn, step, messages, tools, reply)
             reasoning += reply.reasoning
             new.append(reply.message())
             stopping = reply.finish_reason == "stopped" or self._stop.is_set()
             if not reply.tool_calls:
-                return TurnResult(reply.content, new, events, lookups, stopping, reasoning, step)
+                return result(reply.content, stopping, step)
 
             for call in reply.tool_calls:
                 if stopping or self._stop.is_set():
@@ -139,11 +179,10 @@ class Engine:
                 events.append(ev)
                 new.append(_tool_msg(call, content))
             if stopping:
-                return TurnResult(reply.content, new, events, lookups, True, reasoning, step)
+                return result(reply.content, True, step)
 
         new.append({"role": "assistant", "content": "(stopped: too many tool steps in one answer)"})
-        return TurnResult(_last_text(new), new, events, lookups, False, reasoning, max_steps,
-                          error="step limit reached")
+        return result(_last_text(new), False, max_steps, "step limit reached")
 
     # ------------------------------------------------------------------ one call
     def _handle(self, turn: int, call: dict, cache: dict, lookups: int, limit_hit: bool) -> tuple[str, ToolEvent, int]:
@@ -173,8 +212,12 @@ class Engine:
             return done(ev, "refused", f"Refused: {reason}. The call was not run.", reason=reason,
                         code="unknown_tool" if tool is None else "schema")
 
-        if tool.lookup and lookups >= self.settings.lookup_limit:
-            reason = f"research limit reached ({self.settings.lookup_limit} lookups)"
+        if tool.lookup and not self._opts.allow_web:
+            reason = "internet access is switched off for this chat"
+            return done(ev, "refused", f"Refused: {reason}. Answer without web tools.", reason=reason, code="web_off")
+
+        if tool.lookup and lookups >= self._limit():
+            reason = f"research limit reached ({self._limit()} lookups)"
             return done(ev, "refused", f"Refused: {reason}. Answer with what you have.", reason=reason, code="depth")
 
         key = name + json.dumps(args, sort_keys=True, ensure_ascii=False)
@@ -183,10 +226,12 @@ class Engine:
 
         counted = 1 if tool.lookup else 0
         if counted:
-            ev.lookup = f"{lookups + 1} of {self.settings.lookup_limit}"
+            ev.lookup = f"{lookups + 1} of {self._limit()}"
         try:
             result = self._execute(tool, args)
         except Blocked as e:
+            if e.code in NETWORK_CODES:   # the site couldn't be reached: a failure, not a policy refusal
+                return done(ev, "error", f"Fetch failed ({e.code}): {e}", counted, reason=str(e), code=e.code)
             return done(ev, "blocked", f"Blocked by the web gateway ({e.code}): {e}", counted, reason=str(e), code=e.code)
         except GatewayError as e:
             return done(ev, "error", f"Fetch failed ({e.code}): {e}", counted, reason=str(e), code=e.code)
@@ -273,7 +318,7 @@ class Engine:
         return out
 
     def _offered_tools(self, limit_hit: bool) -> list[dict]:
-        if not limit_hit:
+        if not limit_hit and self._opts.allow_web:
             return self.registry.specs()
         return self.registry.specs({n for n in self.registry.names() if not self.registry.get(n).lookup})
 

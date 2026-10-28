@@ -113,7 +113,7 @@ def current_time(ctx, timezone: str = "UTC"):
 def web_search(ctx, query: str, max_results: int = 8):
     if ctx.search is None:
         raise ToolFailure("search unavailable")
-    return ctx.search.search(query, max_results)
+    return ctx.search.search(query, max_results, engines=ctx.engines)
 
 
 @tool(description="Read a public web page (HTTP GET, read-only) and return its text, title and links. "

@@ -70,6 +70,27 @@ class SupervisorTests(unittest.TestCase):
             sup.stop_all()
 
 
+class Restart(unittest.TestCase):
+    def test_deliberate_restart_is_not_a_crash(self):
+        tmp = Path(tempfile.mkdtemp())
+        sup = Supervisor(backoff=(0.05,), poll_s=0.05)
+        sup.add(spec(tmp, crashes=0, max_restarts=0))   # any crash would mean "failed"
+        try:
+            sup.start("svc")
+            self.assertEqual(sup.wait_ready("svc").state, "up")
+            first = sup.procs["svc"].proc
+            sup.restart("svc")
+            deadline = time.time() + 10
+            while sup.procs["svc"].state != "up" and time.time() < deadline:
+                time.sleep(0.05)
+            m = sup.procs["svc"]
+            self.assertEqual((m.state, m.restarts), ("up", 0))
+            self.assertIsNot(m.proc, first)
+            self.assertIsNotNone(first.poll())
+        finally:
+            sup.stop_all()
+
+
 class SelfTest(unittest.TestCase):
     def setUp(self):
         socketguard.install(set())

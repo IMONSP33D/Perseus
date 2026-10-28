@@ -15,12 +15,12 @@ bash preflight.sh && python perseus.py
 | Phase | What | State |
 | --- | --- | --- |
 | 0 Fast boot | preflight, sizing, download, vLLM launch, boot timings | built; needs its first real-GPU run |
-| 1 Wire dashboard | the existing dashboard, streaming, token auth, dev view | backend pieces built (streaming client, feed events, prompt rendering); waiting on the dashboard files |
+| 1 Wire dashboard | the Perseus Chat design, streaming, token auth, dev view | built; tested in a browser against a stand-in model |
 | 2 Safe tool loop | registry, validation, tool feed, offline tools | built, gate tests pass |
 | 3 Web gateway | read-only gateway, SearXNG search, fetch, limits, kill switch, boot self-test | built, gate tests pass |
 | 4 Developer harness | hot-reload tools, session export and replay | built (parser fixtures need a real model) |
 
-Until the dashboard is wired, `perseus.py` ends in a terminal console that runs the full tool loop.
+`perseus.py` ends by serving the dashboard. `--console` gives the terminal console instead.
 
 ## What `perseus.py` does, in order
 
@@ -28,16 +28,62 @@ Until the dashboard is wired, `perseus.py` ends in a terminal console that runs 
 2. **Weights.** Waits for the download that preflight started, showing progress.
 3. **Processes.** Starts SearXNG and vLLM under the supervisor. vLLM runs on 127.0.0.1, offline, with a per-boot key and no HF token.
 4. **Proof.** Times the first token, then sends one test tool call. It must come back parsed, or Perseus stops and names the parser.
-5. **Console.** Runs the safe tool loop in the terminal. The dashboard replaces this in Phase 1.
+5. **Dashboard.** Prints a link with a one-time access token (see below). Ctrl-C, or `kill`, stops vLLM and SearXNG too.
 
 Flags:
 
 - `--ask "question"`: one answer, with the tool log printed.
 - `--selftest`: the refusal checks only.
 - `--replay logs/session-….json`: re-run a saved session offline.
-- `--no-repl`, `--fast-start`, `--timings`, `--print-cmd`.
+- `--console`: the terminal console instead of the dashboard.
+- `--fast-start`, `--timings`, `--print-cmd`.
 
 Console commands: `/depth quick|standard|deep`, `/web off|on` (kill switch), `/feed`, `/prompt` (the raw prompt after the chat template), `/export`, `/reset`, `/exit`. Ctrl-C during an answer is the Stop button; the partial answer is kept.
+
+## The dashboard (`perseus/web/`, `perseus/server.py`, `perseus/dashboard.py`)
+
+A port of the "Perseus Chat Interface" design canvas into plain HTML, CSS and JavaScript (no build step, no framework), served by Perseus itself.
+
+**Opening it.** `perseus.py` prints `http://127.0.0.1:8080/?token=…`. The box binds to loopback only, so forward the port from your own computer:
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 user@<gpu box>
+```
+
+Then open the printed link. The token is exchanged for a session cookie, so later visits need only `http://127.0.0.1:8080/`. With `public = true` the dashboard binds `0.0.0.0` and the link carries the box's IP; anyone with the link can use the model.
+
+**What each control does.**
+
+| Control | Effect |
+| --- | --- |
+| Internet Access (toggle, header pill) | Off: web tools are neither offered to the model nor run, and the gateway's kill switch is on. |
+| Show Thinking | Shows or hides the Thinking Process panel (display only). |
+| Sandbox Mode | Disabled: local code execution comes with the VM sandbox in a later release. |
+| Thinking: Off / Low / Medium / High | Shown only for models whose chat template thinks. Off sends `enable_thinking: false`; for gpt-oss the level is sent as `reasoning_effort`. |
+| Context ring | Tokens used by the last answer (prompt plus output, as vLLM reported) out of the current context. |
+| System prompt | Engineer, Planner, Researcher or your own text, placed before Perseus's safety rules (never instead of them). |
+| Memory 8K / 32K / 128K / Max | The context length. Options that don't fit this box's KV cache are disabled. Applying restarts vLLM. |
+| Creativity | Temperature 0.2 / 0.7 / 1.0. |
+| Answer length | Output cap of 1K / 4K / 16K tokens, never more than half the context. |
+| Research depth | Lookup limit per answer (scaled down by the small-GPU profile). |
+| Search engines | The SearXNG engines asked for each search. |
+| Model server | Live state from the supervisor. Apply & restart is offered only when Memory changed. |
+| Tool feed | Every call with its status (OK, Blocked, Refused, Error, Cached, Stopped), reason, lookup count and warning badge. Details shows the exact arguments and the text the model received. |
+| View raw (under each answer) | The prompt after the chat template, token counts, and the model's raw output for every step. |
+| Attach | Text files up to 200 KB each (5 per message), added to the message as fenced blocks. |
+| Send / Stop | While an answer runs, the send button stops it; the partial answer is kept. |
+
+Chats live in memory on the box and vanish at teardown; "Export all chats" downloads everything as JSON. The theme, Show Thinking and the feed panel are remembered per browser.
+
+**Security.**
+
+- Every page and API call needs the session cookie (HttpOnly, SameSite=Strict) or the token as a Bearer header. Only `/healthz` and `/assets/*` are open.
+- Writes need an `X-Perseus` header and a same-origin `Origin`.
+- Host headers other than an IP or `localhost` are refused, which guards against DNS rebinding.
+- A strict content-security policy allows no inline script or style.
+- Model and web text reaches the page only as text nodes; links are http(s) only and open with `noreferrer`.
+
+**API** (for scripts; `Authorization: Bearer <token>`): `GET /api/state` · `PATCH /api/settings` · `POST /api/model/apply {"context": N}` · `GET|POST|DELETE /api/chats` · `GET|DELETE /api/chats/<id>` · `POST /api/chats/<id>/messages {"text"}` (a server-sent-events stream of `start`, `text`, `tool` and `done` events) · `POST /api/chats/<id>/stop` · `GET /api/chats/<id>/raw/<message id>` · `GET /api/export` · `GET /healthz`.
 
 ## The tool loop (`perseus/engine.py`)
 
@@ -98,6 +144,8 @@ These were written against vLLM 0.32.0 and SearXNG without running them on a GPU
 - [ ] SearXNG starts with `python -m searx.webapp` and answers `/healthz` (`perseus/searxng.py`).
 - [ ] Download progress counts Xet's in-progress bytes (otherwise the ETA starts late).
 - [ ] Measured KV-cache size is close to preflight's estimate; tune `RESERVE_*` if not.
+- [ ] Thinking controls: Qwen3 honours `chat_template_kwargs.enable_thinking`, and gpt-oss honours `reasoning_effort` (`perseus/dashboard.py`).
+- [ ] View raw renders the prompt with the model's own tokenizer (needs `transformers`, installed with vLLM).
 - [ ] Record three cold boots: `python perseus.py --timings`.
 
 ## Layout
@@ -125,13 +173,16 @@ perseus/engine.py       the tool loop
 perseus/feed.py         tool feed events and export
 perseus/llm.py          vLLM streaming client (tool calls reassembled)
 perseus/session.py      recording, export, offline replay
-perseus/console.py      terminal front end (until the dashboard)
+perseus/console.py      terminal front end (--console)
+perseus/dashboard.py    chats, settings and turns for the dashboard
+perseus/server.py       dashboard HTTP server: auth, API, streaming
+perseus/web/            the dashboard page, styles, script and logos
 perseus/devtools.py     raw prompt after the chat template
 tools/_example.py       template for your own tools
 tests/                  python3 -m unittest discover -s tests -t .
 ```
 
-Tests need no GPU, no network and no extra packages (109 tests, about 5 s). To dry-run the whole preflight check:
+Tests need no GPU, no network and no extra packages (122 tests, about 12 s). To dry-run the whole preflight check:
 
 ```bash
 PERSEUS_FAKE_HW=tests/fixtures/hw_1x4090.json python3 -m perseus.preflight check --meta-file tests/fixtures/meta_qwen25_32b_awq.json

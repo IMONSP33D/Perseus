@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import secrets
+import signal
 import socket
 import sys
 import time
@@ -256,7 +257,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--selftest", action="store_true", help="run the gateway refusal checks and exit")
     p.add_argument("--replay", metavar="EXPORT.json", help="re-run a saved session offline (no GPU, no network)")
     p.add_argument("--fast-start", action="store_true", help="skip CUDA graph capture (faster load)")
-    p.add_argument("--no-repl", action="store_true", help="serve until Ctrl-C without the terminal console")
+    p.add_argument("--console", action="store_true", help="terminal console instead of the dashboard")
+    p.add_argument("--no-repl", action="store_true", help=argparse.SUPPRESS)  # old name for the default: serve
     p.add_argument("--timings", action="store_true", help="print the latest boot timings and exit")
     p.add_argument("--print-cmd", action="store_true", help="print the vLLM command and exit")
     args = p.parse_args(argv)
@@ -310,8 +312,19 @@ def main(argv: list[str] | None = None) -> None:
         record("wait_for_download", time.monotonic() - t_wait)
 
     # 3. processes ------------------------------------------------------------
+    last_state: dict[str, str] = {}
+
     def on_state(name, m):
-        if m.state == "restarting":
+        try:
+            _report_state(name, m)
+        finally:
+            last_state[name] = m.state
+
+    def _report_state(name, m):
+        if m.state == "restarting" and m.intentional:
+            if last_state.get(name) != "restarting":
+                say(f"\n  ↻ {name} restarting with new settings")
+        elif m.state == "restarting":
             say(f"\n  ! {name} restarting (attempt {m.restarts} of {m.spec.max_restarts}): {m.reason}")
         elif m.state == "up" and m.restarts:
             say(f"\n  ✓ {name} back up")
@@ -319,6 +332,12 @@ def main(argv: list[str] | None = None) -> None:
             say(f"\n  ✗ {name} failed: {m.reason}\n{m.tail}")
 
     sup = Supervisor(on_state=on_state)
+
+    def interrupt(signum, frame):
+        raise KeyboardInterrupt  # SIGTERM / SIGHUP unwind into the finally below, which stops vLLM and SearXNG
+
+    signal.signal(signal.SIGTERM, interrupt)
+    signal.signal(signal.SIGHUP, interrupt)
     max_restarts = int(r.get("backend", {}).get("max_restarts", 3))
     search = SearchClient(search_port)
     sx_cmd, sx_env = searxng.command(ROOT)
@@ -372,22 +391,21 @@ def main(argv: list[str] | None = None) -> None:
                                        tool_result_tokens=prof.get("tool_result_tokens") or None,
                                        max_context=int(r["vllm"]["max_model_len"]), small_gpu=bool(prof["small_gpu"])),
                         recorder=recorder)
-        from .console import Console, feed_line
-        console = Console(engine, depths, limits.get("research_depth", "standard"), LOG_DIR, gateway,
-                          user_tools.refresh, recorder, model_dir=Path(r["model"]["path"]))
-        if args.ask:
-            print("model › ", end="", flush=True)
-            console.ask(args.ask)
-            say(f"  saved {console.export()}")
-        elif args.no_repl:
-            say("\nServing (no console). Ctrl-C to stop.")
-            while sup.procs["vLLM"].state != "failed":
-                time.sleep(1)
-            die("vLLM failed and restarts ran out", *sup.procs["vLLM"].hints)
-        else:
-            console.loop()
-            if console.history:
+        if args.ask or args.console:
+            from .console import Console
+            console = Console(engine, depths, limits.get("research_depth", "standard"), LOG_DIR, gateway,
+                              user_tools.refresh, recorder, model_dir=Path(r["model"]["path"]))
+            if args.ask:
+                print("model › ", end="", flush=True)
+                console.ask(args.ask)
                 say(f"  saved {console.export()}")
+            else:
+                console.loop()
+                if console.history:
+                    say(f"  saved {console.export()}")
+        else:
+            serve_dashboard(r, sup, llm, registry, engine.ctx, gateway, depths, user_tools, rep,
+                            lambda: build_vllm_cmd, args.fast_start, vllm_port)
         if refused:
             say(f"  ! socket guard refused {len(refused)} connection(s) outside the gateway: {', '.join(refused[:5])}")
     except KeyboardInterrupt:
@@ -395,6 +413,89 @@ def main(argv: list[str] | None = None) -> None:
     finally:
         say("  stopping…")
         sup.stop_all()
+
+
+def precision_label(v: dict) -> str:
+    w = str(v.get("weights", ""))
+    names = {"bf16": "BF16", "fp16": "FP16", "fp8 (online)": "FP8 (quantized at load)"}
+    label = names.get(w) or (w.split(":", 1)[1].upper() + " (from the repo)" if w.startswith("repo:") else w.upper())
+    if v.get("kv_cache_dtype") == "fp8":
+        label += " · FP8 KV cache"
+    if v.get("cpu_offload_gb"):
+        label += f" · {v['cpu_offload_gb']:g} GB offloaded to RAM"
+    return label
+
+
+def serve_dashboard(r: dict, sup, llm, registry, ctx, gateway, depths, user_tools, selftest_report,
+                    cmd_builder, fast_start: bool, vllm_port: int) -> None:
+    """Serve the dashboard until Ctrl-C (or until vLLM fails for good)."""
+    from .dashboard import Dashboard
+    from .server import Server
+
+    v, prof = r["vllm"], r["profile"]
+    model_dir = Path(r["model"]["path"])
+    info = {"model": r["model"]["id"], "hardware": r["hardware"]["summary"], "precision": precision_label(v),
+            "context": int(v["max_model_len"]), "capacity": int(v.get("context_capacity") or v["max_model_len"]),
+            "max_positions": int(r["model"].get("max_positions") or v["max_model_len"]),
+            "thinks": bool(r["model"].get("thinks")), "reasoning_effort": v.get("reasoning_parser") == "openai_gptoss",
+            "small_gpu": bool(prof.get("small_gpu")), "tensor_parallel": int(v["tensor_parallel_size"])}
+
+    def restart_model(tokens: int) -> None:
+        r["vllm"]["max_model_len"] = tokens
+        sup.restart("vLLM", cmd_builder()(r, vllm_port, fast_start))
+        m = sup.wait_ready("vLLM")
+        if m.state != "up":
+            raise RuntimeError(m.reason or "vLLM didn't come back")
+
+    def raw_prompt(messages, tools):
+        from .devtools import render_prompt
+        return render_prompt(model_dir, messages, tools)
+
+    def status():
+        return {name: {"state": st["state"], "restarts": st["restarts"], **({"reason": st["reason"]} if st.get("reason") else {})}
+                for name, st in sup.status().items()}
+
+    engine_settings = {"tool_result_tokens": prof.get("tool_result_tokens") or None,
+                       "max_context": int(v["max_model_len"]), "small_gpu": bool(prof.get("small_gpu"))}
+    dash = Dashboard(info=info, llm=llm, registry=registry, ctx=ctx, depths=depths, engine_settings=engine_settings,
+                     engine_list=list(r["search"]["engines"]), status=status, restart_model=restart_model,
+                     raw_prompt=raw_prompt, refresh_tools=user_tools.refresh, gateway=gateway)
+    dash.update_settings({"depth": r.get("limits", {}).get("research_depth", "standard")})
+
+    def health():
+        st = status()
+        return {"ok": st.get("vLLM", {}).get("state") == "up", "processes": st, "selftest": selftest_report.summary()}
+
+    srv = r["server"]
+    try:
+        server = Server(dash, srv["bind"], int(srv["port"]), health=health)
+    except OSError as e:
+        die(f"can't open the dashboard on {srv['bind']}:{srv['port']} ({e.strerror or e})",
+            "another program uses that port: set [server] port in perseus.toml")
+    server.start()
+    port = server.port
+    say("")
+    if srv.get("public"):
+        host = _public_ip()
+        say(f"  ✓ dashboard (public): {server.url(host)}")
+        say("  ! the dashboard is reachable from the internet; anyone with this link can use the model")
+    else:
+        say(f"  ✓ dashboard: {server.url()}")
+        say(f"    from your computer: ssh -N -L {port}:127.0.0.1:{port} <user>@<this box>, then open the link")
+    say("    Ctrl-C stops Perseus.")
+    try:
+        while sup.procs["vLLM"].state != "failed":
+            time.sleep(1)
+        die("vLLM failed and restarts ran out", *sup.procs["vLLM"].hints)
+    finally:
+        server.stop()
+
+
+def _public_ip() -> str:
+    try:
+        return socket.gethostbyname(socket.gethostname())
+    except OSError:
+        return "<this box's IP>"
 
 
 def run_replay(path: Path) -> None:

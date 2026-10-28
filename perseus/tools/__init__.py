@@ -53,6 +53,7 @@ class ToolContext:
     gateway: Any = None          # perseus.gateway.Gateway
     search: Any = None           # perseus.searxng.SearchClient
     limits: dict = field(default_factory=dict)
+    engines: list[str] | None = None   # search engines chosen in the dashboard; None = all configured
 
 
 class Registry:

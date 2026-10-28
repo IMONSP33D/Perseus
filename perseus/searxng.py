@@ -26,8 +26,11 @@ class SearchClient:
         self.timeout_s = timeout_s
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never via a proxy
 
-    def search(self, query: str, max_results: int = 8) -> dict:
-        q = urllib.parse.urlencode({"q": query, "format": "json", "safesearch": 0})
+    def search(self, query: str, max_results: int = 8, engines: list[str] | None = None) -> dict:
+        params = {"q": query, "format": "json", "safesearch": 0}
+        if engines:
+            params["engines"] = ",".join(e for e in engines if e.replace("_", "").isalnum())
+        q = urllib.parse.urlencode(params)
         try:
             with self._opener.open(f"{self.base}/search?{q}", timeout=self.timeout_s) as resp:
                 data = json.loads(resp.read(4 * 1024 * 1024))

@@ -48,6 +48,7 @@ class Managed:
     hints: list[str] = field(default_factory=list)
     tail: str = ""
     started_at: float = 0.0
+    intentional: bool = False       # a restart someone asked for: not a crash
 
 
 class Supervisor:
@@ -91,6 +92,27 @@ class Supervisor:
                 progress(time.monotonic() - t0)
             time.sleep(self.poll_s)
 
+    def restart(self, name: str, cmd: list[str] | None = None, timeout_s: float = 30) -> Managed:
+        """Deliberate restart (new settings, or the dashboard's Restart button). Doesn't count as a crash."""
+        m = self.procs[name]
+        with self._lock:
+            m.intentional = True
+        try:
+            self._set(m, "restarting")
+            self._terminate(m, timeout_s)
+            if cmd is not None:
+                m.spec.cmd = cmd
+            m.reason, m.hints, m.tail = "", [], ""
+            self._spawn(m, "restarting")
+        finally:
+            with self._lock:
+                m.intentional = False
+        if name not in self._watchers or not self._watchers[name].is_alive():
+            t = threading.Thread(target=self._watch, args=(m,), daemon=True, name=f"watch-{name}")
+            self._watchers[name] = t
+            t.start()
+        return m
+
     def stop_all(self, timeout_s: float = 30) -> None:
         self._stop.set()
         for m in self.procs.values():
@@ -121,13 +143,16 @@ class Supervisor:
             time.sleep(self.poll_s)
             if m.state in ("failed", "stopped") or m.proc is None:
                 return
-            code = m.proc.poll()
+            proc = m.proc
+            code = proc.poll()
             if code is None:
-                if m.state == "restarting" and self._healthy(m):
+                if m.state == "restarting" and not m.intentional and self._healthy(m):
                     self._set(m, "up")
                 continue
             if self._stop.is_set():
                 return
+            if m.intentional or m.proc is not proc:
+                continue  # a restart someone asked for replaced this process
             m.last_exit = code
             m.tail = tail(m.spec.log_path)
             m.hints = explain_crash(m.tail, m.spec)
