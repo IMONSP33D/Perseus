@@ -45,8 +45,9 @@ Perseus's data directory.</p></main></body></html>"""
 
 class Server:
     def __init__(self, dash: Dashboard, bind: str = "127.0.0.1", port: int = 8080, token: str | None = None,
-                 health: callable = None):
+                 health: callable = None, on_visit: callable = None):
         self.dash = dash
+        self.on_visit = on_visit                   # (kind, detail): tells the terminal a browser arrived
         self.token = token or secrets.token_urlsafe(24)
         self.session = secrets.token_urlsafe(32)   # cookie value; the token itself never sits in the cookie
         self.health = health or (lambda: {"ok": True})
@@ -193,10 +194,18 @@ class _Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._dispatch("DELETE")
 
+    def _visit(self, kind: str, detail: str = "") -> None:
+        if self.app.on_visit and not self.headers.get("X-Perseus-Selfcheck"):
+            try:
+                self.app.on_visit(kind, detail)
+            except Exception:
+                pass
+
     def _dispatch(self, method: str):
         self._consumed = False
         try:
             if not self._host_ok():
+                self._visit("bad_host", self.headers.get("Host") or "")
                 return self._error(421, "unexpected Host header; open the dashboard by IP or localhost")
             url = urlsplit(self.path)
             path = url.path
@@ -224,12 +233,16 @@ class _Handler(BaseHTTPRequestHandler):
         token = (query.get("token") or [""])[0]
         if token:
             if not hmac.compare_digest(token, self.app.token):
+                self._visit("bad_token")
                 return self._send(401, LOCKED_PAGE.encode(), "text/html; charset=utf-8")
+            self._visit("signed_in")
             cookie = f"{COOKIE}={self.app.session}; HttpOnly; SameSite=Strict; Path=/"
             return self._send(303, b"", "text/plain", {"Location": "/", "Set-Cookie": cookie,
                                                         "Cache-Control": "no-store"})
         if not self._authed():
+            self._visit("no_token")
             return self._send(401, LOCKED_PAGE.encode(), "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+        self._visit("page")
         self._send(200, (STATIC_DIR / "index.html").read_bytes(), "text/html; charset=utf-8", {"Cache-Control": "no-store"})
 
     def _static(self, name: str):

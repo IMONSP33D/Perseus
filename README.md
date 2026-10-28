@@ -48,8 +48,10 @@ A port of the "Perseus Chat Interface" design canvas into plain HTML, CSS and Ja
 **Opening it.** `perseus.py` prints `http://127.0.0.1:8080/?token=…`. The box binds to loopback only, so forward the port from your own computer:
 
 ```bash
-ssh -N -L 8080:127.0.0.1:8080 user@<gpu box>
+ssh -N -o ExitOnForwardFailure=yes -L 8080:127.0.0.1:8080 user@<gpu box>
 ```
+
+Run that on your own computer, not on the box, and keep it open while you use the dashboard. At startup Perseus checks the dashboard the way a browser would (health, sign-in with the token, the page and its script), checks that the box's SSH server allows tunnels, and prints the command above with your user and address filled in. When a browser arrives it says so: "✓ a browser signed in", or what went wrong ("without the token", "an old or wrong token"). Nothing printed means nothing came through the tunnel.
 
 Then open the printed link. The token is exchanged for a session cookie, so later visits need only `http://127.0.0.1:8080/`. With `public = true` the dashboard binds `0.0.0.0` and the link carries the box's IP; anyone with the link can use the model.
 

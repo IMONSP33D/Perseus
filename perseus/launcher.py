@@ -410,7 +410,8 @@ def serve_dashboard(r: dict, paths: Paths, run: RunFiles, sup, llm, registry, ct
 
     srv = r["server"]
     try:
-        server = Server(dash, srv["bind"], int(srv["port"]), health=health)
+        from perseus.web.reach import VisitReporter
+        server = Server(dash, srv["bind"], int(srv["port"]), health=health, on_visit=VisitReporter(say))
     except OSError as e:
         die(f"can't open the dashboard on {srv['bind']}:{srv['port']} ({e.strerror or e})",
             "another program uses that port: set [server] port in perseus.toml")
@@ -424,7 +425,7 @@ def serve_dashboard(r: dict, paths: Paths, run: RunFiles, sup, llm, registry, ct
         say("  ! the dashboard is reachable from the internet; anyone with this link can use the model")
     else:
         say(f"  ✓ dashboard: {url}")
-        say(f"    from your computer: ssh -N -L {port}:127.0.0.1:{port} <user>@<this box>, then open the link")
+    report_reachability(server, port, public=bool(srv.get("public")))
     say(f"    the link is also in {link_file} · Ctrl-C stops Perseus.")
     try:
         while sup.procs["vLLM"].state != "failed":
@@ -432,6 +433,35 @@ def serve_dashboard(r: dict, paths: Paths, run: RunFiles, sup, llm, registry, ct
         die("vLLM failed and restarts ran out", *sup.procs["vLLM"].hints)
     finally:
         server.stop()
+
+
+def report_reachability(server, port: int, public: bool) -> None:
+    """Check the dashboard answers like a browser expects, then say exactly how to reach it."""
+    from perseus.web import reach
+
+    results = reach.self_check(port, server.token)
+    bad = [d for ok, d in results if not ok]
+    if bad:
+        say(f"  ✗ dashboard self-check failed: {'; '.join(bad)}")
+        say("      → this is a Perseus problem, not your tunnel: restart it (Ctrl-C, python3 perseus.py)")
+    else:
+        say(f"  ✓ dashboard self-check: health, sign-in, page and script all answer on 127.0.0.1:{port}")
+    if public:
+        return
+    refused = reach.ssh_forwarding()
+    if refused:
+        say(f"  ! {refused}, so an SSH tunnel will be refused")
+        say("      → set AllowTcpForwarding yes in /etc/ssh/sshd_config, then: sudo systemctl reload ssh")
+    say("")
+    say("    To open it from your own computer (not this box), in a new terminal there:")
+    say(f"      {reach.tunnel_command(port)}")
+    say("    keep that running, then open the link above in your browser. This terminal says")
+    say("    '✓ a browser signed in' when it arrives. If nothing arrives:")
+    say(f"      · port {port} busy on your computer: use -L 9000:127.0.0.1:{port} and http://127.0.0.1:9000/?token=…")
+    say("      · the tunnel terminal shows 'open failed: administratively prohibited': forwarding is off on this box")
+    say("      · 'connect failed' or 'Connection refused' there: Perseus isn't running (it serves only while up)")
+    if not reach.in_ssh_session():
+        say("      (fill in your SSH user and the box's address)")
 
 
 def _public_ip() -> str:
