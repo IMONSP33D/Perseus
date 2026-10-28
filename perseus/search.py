@@ -20,13 +20,17 @@ class SearchUnavailable(Exception):
 
 
 class SearchClient:
-    def __init__(self, port: int, timeout_s: float = 12.0):
+    def __init__(self, port: int, timeout_s: float = 12.0, engines: list[str] | None = None):
         self.base = f"http://127.0.0.1:{int(port)}"   # fixed; nothing from the model reaches this string
         self.timeout_s = timeout_s
+        # Named on every query: SearXNG otherwise asks only its "general" engines, which leaves out
+        # GitHub, arXiv and Stack Overflow even when they're configured.
+        self.engines = list(engines or [])
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never via a proxy
 
     def search(self, query: str, max_results: int = 8, engines: list[str] | None = None) -> dict:
         params = {"q": query, "format": "json", "safesearch": 0}
+        engines = engines or self.engines
         if engines:
             params["engines"] = ",".join(e for e in engines if e.replace("_", "").isalnum())
         q = urllib.parse.urlencode(params)

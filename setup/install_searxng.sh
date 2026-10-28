@@ -19,10 +19,19 @@ if [[ "$(git -C "$DEST/src" rev-parse HEAD 2>/dev/null || true)" != "$SEARXNG_RE
   git -C "$DEST/src" fetch -q --depth 1 "$SEARXNG_REPO" "$SEARXNG_REF"
   git -C "$DEST/src" checkout -q FETCH_HEAD
 fi
-if [[ ! -x "$DEST/venv/bin/python" ]] || ! "$DEST/venv/bin/python" -c 'import searx' 2>/dev/null; then
+STAMP="$DEST/venv/.perseus-installed"
+if [[ "$(cat "$STAMP" 2>/dev/null || true)" != "$SEARXNG_REF" ]] \
+   || ! "$DEST/venv/bin/python" -c 'import searx' 2>/dev/null; then
+  rm -rf "$DEST/venv"   # start clean: a half-finished earlier attempt leaves a venv that looks usable
   uv venv -q --python "$PYTHON_VERSION" "$DEST/venv"
-  VIRTUAL_ENV="$DEST/venv" uv pip install -q -r "$DEST/src/requirements.txt"
-  VIRTUAL_ENV="$DEST/venv" uv pip install -q --no-build-isolation -e "$DEST/src"
+  export VIRTUAL_ENV="$DEST/venv"
+  # --no-build-isolation (below) builds SearXNG with this venv's own packages, so the build
+  # tools have to be here first: uv creates venvs without setuptools or wheel.
+  # shellcheck disable=SC2086
+  uv pip install -q $SEARXNG_BUILD_DEPS
+  uv pip install -q -r "$DEST/src/requirements.txt"
+  uv pip install -q --no-build-isolation -e "$DEST/src"
+  echo "$SEARXNG_REF" > "$STAMP"
 fi
 "$DEST/venv/bin/python" -c 'import searx' || { echo "  ✗ SearXNG installed but won't import" >&2; exit 1; }
 printf '  \033[32m✓\033[0m SearXNG @ %s in %s\n' "${SEARXNG_REF:0:12}" "$DEST"

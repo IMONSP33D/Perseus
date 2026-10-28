@@ -96,6 +96,22 @@ class Clients(unittest.TestCase):
         self.assertEqual(out["engines_answered"], ["arxiv", "duckduckgo", "github"])
         self.assertEqual(out["engines_unresponsive"], ["duckduckgo"])
 
+    def test_configured_engines_named_by_default(self):
+        seen = {}
+        orig = _H.do_GET
+
+        def spy(handler):
+            seen["path"] = handler.path
+            orig(handler)
+        _H.do_GET = spy
+        try:
+            SearchClient(self.port, engines=["github", "arxiv"]).search("x")
+            self.assertIn("engines=github%2Carxiv", seen["path"])
+            SearchClient(self.port, engines=["github", "arxiv"]).search("x", engines=["wikipedia"])
+            self.assertIn("engines=wikipedia", seen["path"])        # the dashboard's choice wins
+        finally:
+            _H.do_GET = orig
+
     def test_search_down(self):
         import socket
         with socket.socket() as s:

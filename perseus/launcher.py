@@ -266,7 +266,7 @@ def main(argv: list[str] | None = None) -> None:
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGHUP, interrupt)
     max_restarts = int(r.get("backend", {}).get("max_restarts", 3))
-    search = SearchClient(search_port)
+    search = SearchClient(search_port, engines=list(r["search"]["engines"]))
     sx_cmd, sx_env = searxng_command(paths)
     have_searxng = Path(sx_cmd[0]).exists()
     if have_searxng:
