@@ -70,6 +70,15 @@ def vllm_env(api_key: str, run_dir: Path | None = None) -> dict[str, str]:
         "VLLM_NO_USAGE_STATS": "1",
         "DO_NOT_TRACK": "1",
     })
+    # perseus.py runs .venv/bin/python without activating the venv, so tools vLLM's dependencies
+    # install there (ninja for kernel builds) weren't on PATH.
+    venv_bin = str(Path(sys.executable).parent)
+    rest = [d for d in env.get("PATH", "/usr/bin:/bin").split(os.pathsep) if d and d != venv_bin]
+    env["PATH"] = os.pathsep.join([venv_bin, *rest])   # first, so the venv's tools win
+    # FlashInfer's top-k/top-p sampler is compiled on first use (ninja + the CUDA compiler), and a
+    # failed compile kills vLLM at warm-up. PyTorch's sampler needs no build and is fast enough for
+    # one user. Export VLLM_USE_FLASHINFER_SAMPLER=1 to opt back in.
+    env.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
     if run_dir is not None:                # compile caches can be GBs: keep them on the data disk
         env["HF_HOME"] = str(run_dir / "hf")
         env["VLLM_CACHE_ROOT"] = str(run_dir / "vllm-cache")
@@ -88,6 +97,9 @@ def explain_crash(log_text: str, r: dict) -> list[str]:
     if "fp8" in cause and ("not supported" in cause or "compute capability" in cause or "unsupported" in cause):
         return ["this GPU can't run these FP8 weights",
                 "use a BF16 or a GPTQ/AWQ repo for [model] id, then re-run bash preflight.sh"]
+    if "flashinfer" in low and ("ninja" in cause or "nvcc" in cause or "no such file" in cause):
+        return ["vLLM couldn't compile a FlashInfer kernel (the build tools aren't on this box)",
+                "unset VLLM_USE_FLASHINFER_SAMPLER (Perseus sets it to 0), or install the CUDA toolkit"]
     if any(m in log_text for m in OOM_MARKERS):
         return [f"vLLM ran out of GPU memory at context {r['vllm']['max_model_len']:,}",
                 "set [model] max_context lower in perseus.toml, or smaller weights (quantization), "

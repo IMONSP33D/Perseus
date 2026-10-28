@@ -39,6 +39,27 @@ class RootCause(unittest.TestCase):
                "RuntimeError: Engine core initialization failed. See root cause above.\n")
         self.assertEqual(root_cause(log), "AssertionError: grammar bitmask")
 
+    def test_vllm_env_finds_venv_tools_and_skips_flashinfer_jit(self):
+        import os
+        import sys
+        from perseus.model.launch import vllm_env
+        env = vllm_env("k")
+        self.assertEqual(env["PATH"].split(os.pathsep)[0], str(Path(sys.executable).parent))
+        self.assertEqual(env["VLLM_USE_FLASHINFER_SAMPLER"], "0")
+
+    def test_ninja_hint(self):
+        from perseus.model.launch import explain_crash
+        log = ("(EngineCore pid=5517) ERROR 10-28 14:59:05 [core.py:1510]   File \"/x/flashinfer/jit/cpp_ext.py\"\n"
+               "(EngineCore pid=5517) ERROR 10-28 14:59:05 [core.py:1510] FileNotFoundError: "
+               "[Errno 2] No such file or directory: 'ninja'\n")
+        self.assertIn("FlashInfer", explain_crash(log, {"vllm": {"max_model_len": 8192}})[0])
+
+    def test_loading_readout_ignores_idle_gpus(self):
+        from perseus.launcher import loading_gib
+        G = 2 ** 30
+        self.assertEqual(loading_gib([20 * G, 1 * G], 1), 20)      # TP=1 on a 2-GPU box
+        self.assertEqual(loading_gib([20 * G, 18 * G, 1 * G, 1 * G], 2), 18)
+
     def test_wrapper_only_falls_back_to_it(self):
         self.assertEqual(root_cause("RuntimeError: Engine core initialization failed. See root cause above."),
                          "RuntimeError: Engine core initialization failed. See root cause above.")

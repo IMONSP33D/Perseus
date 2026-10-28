@@ -128,13 +128,20 @@ def last_log_line(path: Path) -> str:
         return ""
 
 
-def load_progress(expected_gib: float, log: Path):
+def loading_gib(used: list[int], gpus: int) -> float:
+    """GiB loaded per GPU: the least-filled of the `gpus` busiest cards (idle extra GPUs don't count)."""
+    busiest = sorted(used, reverse=True)[:max(1, gpus)]
+    return min(busiest) / 2 ** 30
+
+
+def load_progress(expected_gib: float, log: Path, gpus: int = 1):
     def show(elapsed: float):
         used = gpu_memory_used()
         mem = ""
         if used and expected_gib:
-            pct = min(100, 100 * (min(used) / 2 ** 30) / expected_gib)
-            mem = f"  GPU memory {min(used) / 2 ** 30:.0f}/{expected_gib:.0f} GiB weights ({pct:.0f}%)"
+            gib = loading_gib(used, gpus)
+            pct = min(100, 100 * gib / expected_gib)
+            mem = f"  GPU memory {gib:.0f}/{expected_gib:.0f} GiB weights ({pct:.0f}%)"
         print(f"\r\033[K  loading {elapsed:5.0f}s{mem}  {last_log_line(log)[:70]}", end="", flush=True)
     return show
 
@@ -296,7 +303,8 @@ def main(argv: list[str] | None = None) -> None:
         sup.start("vLLM")
         say(f"  starting vLLM (log: {logs / 'vllm.log'})")
         t_load = time.monotonic()
-        m = sup.wait_ready("vLLM", load_progress(r["vllm"].get("weight_gib_per_gpu", 0), logs / "vllm.log"))
+        m = sup.wait_ready("vLLM", load_progress(r["vllm"].get("weight_gib_per_gpu", 0), logs / "vllm.log",
+                                                         int(r["vllm"].get("tensor_parallel_size", 1))))
         say("")
         if m.state != "up":
             die(f"vLLM didn't start: {m.reason}", *m.hints[1:], code=1)
