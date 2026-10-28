@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .sizing import ModelMeta
+from perseus.model.meta import ModelMeta
 
 
 @dataclass(frozen=True)

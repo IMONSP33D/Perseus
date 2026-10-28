@@ -1,9 +1,11 @@
 # Secrets and per-box state: never committed
 perseus.toml
 perseus.resolved.toml
-.perseus/
+.perseus-data
+# the data directory, if preflight put it beside the checkout or someone set data_dir inside it
+perseus-data/
+weights/
 logs/
-models/
 .venv/
 __pycache__/
 *.pyc

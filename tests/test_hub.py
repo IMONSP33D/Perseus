@@ -1,8 +1,8 @@
 import json
 import unittest
 
-from perseus.hub import HubError, RepoFiles, inspect
-from perseus.parsers import ParserError, pick
+from setup.hub import HubError, RepoFiles, inspect
+from perseus.model.parsers import ParserError, pick
 from tests.models import deepseek_v3, llama31_8b, qwen3_235b
 
 QWEN_CONFIG = {"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "num_hidden_layers": 64,

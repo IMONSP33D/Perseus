@@ -16,8 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import __version__
-from .llm import Reply
+from perseus import __version__
+from perseus.model.client import Reply
 
 
 @dataclass

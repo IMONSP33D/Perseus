@@ -278,6 +278,7 @@ textarea::placeholder { color: var(--placeholder); }
 .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.grid-auto { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 8px; }
 #engines.grid2 { gap: 8px; }
 .opt {
   height: 44px; padding: 0 8px; border-radius: 10px; border: 1.5px solid var(--border); background: var(--surface);

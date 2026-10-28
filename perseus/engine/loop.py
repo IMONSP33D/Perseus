@@ -21,12 +21,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .feed import Feed, ToolEvent, summarize_args
-from .gateway import GatewayError
-from .netpolicy import Blocked
-from .prompts import LIMIT_REACHED, UNTRUSTED_CLOSE, UNTRUSTED_OPEN, system_prompt
-from .searxng import SearchUnavailable
-from .tools import Registry, ToolContext, ToolFailure
+from perseus.engine.feed import Feed, ToolEvent, summarize_args
+from perseus.safety.gateway import GatewayError
+from perseus.safety.netpolicy import Blocked
+from perseus.engine.prompts import LIMIT_REACHED, UNTRUSTED_CLOSE, UNTRUSTED_OPEN, system_prompt
+from perseus.search import SearchUnavailable
+from perseus.tools import Registry, ToolContext, ToolFailure
 
 CHARS_PER_TOKEN = 3.5
 NETWORK_CODES = {"dns"}

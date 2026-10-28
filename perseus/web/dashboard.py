@@ -16,10 +16,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from . import __version__
-from .engine import Engine, EngineSettings, TurnOptions
-from .feed import Feed, ToolEvent
-from .session import Recorder
+from perseus import __version__
+from perseus.engine.loop import Engine, EngineSettings, TurnOptions
+from perseus.engine.feed import Feed, ToolEvent
+from perseus.engine.session import Recorder
 
 PERSONAS = {
     "engineer": "You are a senior software engineer. Give precise, working answers, show code when it helps, "
@@ -196,13 +196,18 @@ class Dashboard:
 
     def context_options(self) -> list[dict]:
         cap = int(self.info["capacity"])
+        if cap >= 2048:
+            cap -= cap % 1024          # the same rounding preflight applies to its own choice
         cur = int(self.info["context"])
         opts = [{"id": i, "label": i.upper(), "tokens": t, "available": t <= cap} for i, t in CONTEXT_STEPS]
         opts.append({"id": "max", "label": "Max", "tokens": cap, "available": True})
         for o in opts:
             o["current"] = o["tokens"] == cur
-        if not any(o["current"] for o in opts):   # preflight's own choice isn't one of the steps
-            opts[-1]["current"] = cap == cur
+        if not any(o["current"] for o in opts):
+            # preflight's pick (or a hand-set max_context) isn't one of the steps: show it as its own option
+            label = f"{cur // 1024}K" if cur >= 1024 else str(cur)
+            opts.insert(len(opts) - 1, {"id": "current", "label": label, "tokens": cur, "available": True,
+                                         "current": True})
         return opts
 
     def apply_context(self, tokens: int) -> None:

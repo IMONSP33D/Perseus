@@ -1,4 +1,4 @@
-"""Boot-time records: one JSON line per stage in logs/boot-times.jsonl.
+"""Boot-time records: one JSON line per stage in <data>/logs/boot-times.jsonl.
 
 The number tracked on every phase is minutes from instance start to first
 token, broken into driver check, env install, download and model load.
@@ -14,13 +14,20 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import LOG_DIR, STATE_DIR
+_where: dict = {"logs": None, "run": None}
 
-TIMINGS = LOG_DIR / "boot-times.jsonl"
+
+def configure(paths) -> None:
+    """Point records at a data directory (perseus.config.Paths). Unconfigured, records are skipped."""
+    _where["logs"], _where["run"] = paths.logs, paths.run
+
+
+def timings_path() -> Path | None:
+    return _where["logs"] / "boot-times.jsonl" if _where["logs"] else None
 
 
 def run_id() -> str:
-    path = STATE_DIR / "run_id"
+    path = _where["run"] / "run_id"
     try:
         return path.read_text().strip()
     except OSError:
@@ -31,10 +38,13 @@ def run_id() -> str:
 
 
 def record(stage: str, seconds: float, **extra) -> None:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    path = timings_path()
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
     line = {"run": run_id(), "stage": stage, "seconds": round(seconds, 1),
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **extra}
-    with TIMINGS.open("a") as f:
+    with path.open("a") as f:
         f.write(json.dumps(line) + "\n")
 
 
@@ -62,7 +72,10 @@ def instance_age_seconds() -> float | None:
         return None
 
 
-def report(path: Path = TIMINGS) -> str:
+def report(path: Path | None = None) -> str:
+    path = path or timings_path()
+    if path is None:
+        return "no boot timings recorded yet"
     try:
         rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
     except OSError:

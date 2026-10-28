@@ -7,9 +7,9 @@ import socket
 import threading
 import unittest
 
-from perseus import socketguard
-from perseus.gateway import Gateway, GatewayError, _PinnedHTTP, _RateLimiter
-from perseus.netpolicy import Blocked, address_problem, parse_url, resolve, secret_problem
+from perseus.safety import socketguard
+from perseus.safety.gateway import Gateway, GatewayError, _PinnedHTTP, _RateLimiter
+from perseus.safety.netpolicy import Blocked, address_problem, parse_url, resolve, secret_problem
 
 PUBLIC = "93.184.215.14"
 

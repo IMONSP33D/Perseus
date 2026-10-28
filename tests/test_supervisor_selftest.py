@@ -5,10 +5,10 @@ import time
 import unittest
 from pathlib import Path
 
-from perseus import socketguard
-from perseus.gateway import Gateway
-from perseus.netpolicy import Blocked
-from perseus.selftest import run
+from perseus.safety import socketguard
+from perseus.safety.gateway import Gateway
+from perseus.safety.netpolicy import Blocked
+from perseus.safety.selftest import run
 from perseus.supervisor import ProcessSpec, Supervisor
 from perseus.tools import Registry, tool
 

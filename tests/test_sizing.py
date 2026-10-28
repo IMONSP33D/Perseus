@@ -1,6 +1,6 @@
 import unittest
 
-from perseus.sizing import SizingError, kv_bytes_per_token, resolve, tp_candidates
+from setup.sizing import SizingError, kv_bytes_per_token, resolve, tp_candidates
 from tests.models import (A100_80, H100, H200, L40S, RTX4090, box, deepseek_v3, llama31_8b, llama33_70b,
                           qwen3_235b, qwen25_32b_awq)
 

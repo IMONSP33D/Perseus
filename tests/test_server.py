@@ -6,10 +6,10 @@ import threading
 import time
 import unittest
 
-from perseus.dashboard import Dashboard
-from perseus.feed import Feed
-from perseus.llm import Reply
-from perseus.server import COOKIE, Server
+from perseus.web.dashboard import Dashboard
+from perseus.engine.feed import Feed
+from perseus.model.client import Reply
+from perseus.web.server import COOKIE, Server
 from perseus.tools import Registry, ToolContext, tool
 
 
@@ -225,6 +225,17 @@ class ServerTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertEqual(self.restarts, [8192])
         self.assertEqual(self.c.req("GET", "/api/state")[1]["info"]["context"], 8192)
+        # small-GPU case: preflight rounded its pick below the KV capacity, so no step matches
+        self.dash.info.update(context=13312, capacity=14081)
+        opts = self.c.req("GET", "/api/state")[1]["context_options"]
+        cur = [o for o in opts if o["current"]]
+        self.assertEqual([(o["id"], o["tokens"]) for o in cur], [("max", 13312)])   # Max rounded like preflight
+        # a hand-set max_context that isn't a step shows as its own option
+        self.dash.info.update(context=20480, capacity=40960)
+        opts = self.c.req("GET", "/api/state")[1]["context_options"]
+        cur = [o for o in opts if o["current"]]
+        self.assertEqual([(o["id"], o["label"], o["tokens"]) for o in cur], [("current", "20K", 20480)])
+        self.dash.info.update(context=8192, capacity=40960)
         self.c.req("POST", "/api/model/apply", {"context": 999_999})
         time.sleep(0.2)
         self.assertIn("between", self.c.req("GET", "/api/state")[1]["info"]["last_restart_error"])

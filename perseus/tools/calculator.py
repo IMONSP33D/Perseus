@@ -1,20 +1,12 @@
-"""Built-in tools. Offline: calculator, current_time. Web: web_search, fetch_url.
-
-No network imports here (enforced by a test): web tools use the gateway and
-search client the engine injects through `ctx`.
-"""
+"""calculator: exact arithmetic, evaluated from a parsed expression tree (never eval)."""
 
 from __future__ import annotations
 
 import ast
 import math
 import operator
-from datetime import datetime, timezone as _tz
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import ToolFailure, tool
-
-# --------------------------------------------------------------------------- calculator
+from perseus.tools import ToolFailure, tool
 
 _BIN = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
         ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.Pow: operator.pow}
@@ -84,58 +76,3 @@ def calculator(ctx, expression: str):
     if isinstance(result, float) and result.is_integer() and abs(result) < 1e15:
         result = int(result)
     return {"expression": expression, "result": result}
-
-
-@tool(description="Get the current date and time, in UTC or in an IANA time zone such as 'America/New_York'.",
-      parameters={"type": "object", "properties": {
-          "timezone": {"type": "string", "maxLength": 64, "default": "UTC",
-                       "description": "IANA time zone name; default UTC."}}},
-      timeout_s=5)
-def current_time(ctx, timezone: str = "UTC"):
-    try:
-        tz = _tz.utc if timezone.upper() == "UTC" else ZoneInfo(timezone)
-    except (ZoneInfoNotFoundError, ValueError):
-        raise ToolFailure(f"unknown time zone {timezone!r}; use an IANA name like 'Europe/Paris'")
-    now = datetime.now(tz)
-    return {"timezone": timezone, "iso": now.isoformat(timespec="seconds"), "weekday": now.strftime("%A")}
-
-
-# --------------------------------------------------------------------------- web
-
-
-@tool(description="Search the web. Returns titles, URLs and snippets from several search engines. "
-                  "Read a result with fetch_url.",
-      parameters={"type": "object", "properties": {
-          "query": {"type": "string", "minLength": 1, "maxLength": 400, "description": "Search terms."},
-          "max_results": {"type": "integer", "minimum": 1, "maximum": 15, "default": 8}},
-          "required": ["query"]},
-      lookup=True, timeout_s=20)
-def web_search(ctx, query: str, max_results: int = 8):
-    if ctx.search is None:
-        raise ToolFailure("search unavailable")
-    return ctx.search.search(query, max_results, engines=ctx.engines)
-
-
-@tool(description="Read a public web page (HTTP GET, read-only) and return its text, title and links. "
-                  "Only public http/https sites; internal addresses and URLs carrying keys are refused.",
-      parameters={"type": "object", "properties": {
-          "url": {"type": "string", "minLength": 8, "maxLength": 2048, "pattern": "^https?://",
-                  "description": "Full http(s) URL."}},
-          "required": ["url"]},
-      lookup=True, timeout_s=45)
-def fetch_url(ctx, url: str):
-    if ctx.gateway is None:
-        raise ToolFailure("web access unavailable")
-    r = ctx.gateway.fetch(url)  # Blocked / GatewayError propagate to the engine, which labels them
-    out = {"url": r.url, "status": r.status, "content_type": r.content_type, "title": r.title}
-    if r.binary:
-        out["note"] = f"binary content ({r.content_type}, {r.bytes:,} bytes) not shown"
-    else:
-        out["text"] = r.text
-        if r.links:
-            out["links"] = [{"text": t, "url": u} for t, u in r.links[:15]]
-    if r.truncated:
-        out["note"] = "page was larger than the response limit and was cut off"
-    if r.redirects:
-        out["redirected_from"] = url
-    return out

@@ -1,8 +1,9 @@
+import tempfile
 import unittest
 from pathlib import Path
 
-from perseus.hardware import GIB, Disk, HardwareError, driver_ok, parse_smi_query, parse_topology, pick_model_dir
-from perseus.launcher import build_vllm_cmd, explain_crash, vllm_env
+from setup.hardware import GIB, Disk, HardwareError, driver_ok, parse_smi_query, parse_topology, pick_data_dir
+from perseus.model.launch import build_vllm_cmd, explain_crash, vllm_env
 
 SMI = """0, NVIDIA H100 80GB HBM3, 81559, 580.65.06, 9.0
 1, NVIDIA H100 80GB HBM3, 81559, 580.65.06, 9.0
@@ -41,17 +42,18 @@ class Hardware(unittest.TestCase):
         self.assertTrue(driver_ok("590.1", "580.0"))
         self.assertFalse(driver_ok("570.172.08", "580.0"))
 
-    def test_disk_pick_prefers_nvme_with_room(self):
-        root = Path("/home/u/perseus")
+    def test_data_dir_prefers_nvme_and_never_lands_in_the_checkout(self):
+        root = Path(tempfile.mkdtemp()) / "perseus"
+        root.mkdir()
         disks = [Disk("/", 900 * GIB, None), Disk("/mnt/nvme", 500 * GIB, True), Disk("/mnt/hdd", 4000 * GIB, False)]
-        path, d = pick_model_dir(disks, 400 * GIB, root)
-        self.assertEqual((str(path), d.mount), ("/mnt/nvme/perseus-models", "/mnt/nvme"))
-        path, d = pick_model_dir(disks, 700 * GIB, root)  # NVMe too small: most free space next
+        path, d = pick_data_dir(disks, 400 * GIB, root)
+        self.assertEqual((str(path), d.mount), ("/mnt/nvme/perseus", "/mnt/nvme"))
+        path, d = pick_data_dir(disks, 700 * GIB, root)  # NVMe too small: most free space next
         self.assertEqual(d.mount, "/mnt/hdd")
-        path, _ = pick_model_dir([Disk("/", 900 * GIB, None)], 100 * GIB, root)
-        self.assertEqual(path, root / "models")
+        path, _ = pick_data_dir([Disk("/", 900 * GIB, None)], 100 * GIB, root)
+        self.assertEqual(path, root.parent / "perseus-data")    # beside the checkout, not in it
         with self.assertRaises(HardwareError):
-            pick_model_dir(disks, 5000 * GIB, root)
+            pick_data_dir(disks, 5000 * GIB, root)
 
 
 class Launcher(unittest.TestCase):

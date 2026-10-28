@@ -26,9 +26,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .dashboard import BadRequest, Busy, Dashboard
+from perseus.web.dashboard import BadRequest, Busy, Dashboard
 
-WEB_DIR = Path(__file__).resolve().parent / "web"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 COOKIE = "perseus_session"
 MAX_BODY = 1024 * 1024
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
@@ -39,7 +39,8 @@ LOCKED_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><tit
 <meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/assets/app.css"></head>
 <body class="pz-light"><main class="locked"><img src="/assets/logo-full.svg" alt="Perseus" class="locked-logo">
 <h1>Open the link from the terminal</h1><p>This dashboard needs the access link Perseus printed when it started
-(it ends in <code>?token=…</code>). Run <code>python perseus.py</code> on the box to see it again.</p></main></body></html>"""
+(it ends in <code>?token=…</code>). It is also saved on the box in <code>run/dashboard.url</code> inside
+Perseus's data directory.</p></main></body></html>"""
 
 
 class Server:
@@ -157,6 +158,14 @@ class _Handler(BaseHTTPRequestHandler):
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
         if n > MAX_BODY:
+            if n <= 8 * MAX_BODY:   # read and discard, so the client gets the 400 instead of a broken pipe
+                left = n
+                while left > 0:
+                    chunk = self.rfile.read(min(65536, left))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
+                self._consumed = True
             raise BadRequest("request too large")
         raw = self.rfile.read(n) if n else b"{}"
         self._consumed = True
@@ -221,12 +230,12 @@ class _Handler(BaseHTTPRequestHandler):
                                                         "Cache-Control": "no-store"})
         if not self._authed():
             return self._send(401, LOCKED_PAGE.encode(), "text/html; charset=utf-8", {"Cache-Control": "no-store"})
-        self._send(200, (WEB_DIR / "index.html").read_bytes(), "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+        self._send(200, (STATIC_DIR / "index.html").read_bytes(), "text/html; charset=utf-8", {"Cache-Control": "no-store"})
 
     def _static(self, name: str):
         if not re.fullmatch(r"[A-Za-z0-9_\-]+\.(css|js|svg|png|woff2|ico)", name):
             return self._error(404, "not found")
-        p = WEB_DIR / "assets" / name
+        p = STATIC_DIR / name
         if not p.is_file():
             return self._error(404, "not found")
         ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"

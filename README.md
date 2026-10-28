@@ -34,13 +34,14 @@ Flags:
 
 - `--ask "question"`: one answer, with the tool log printed.
 - `--selftest`: the refusal checks only.
-- `--replay logs/session-….json`: re-run a saved session offline.
+- `--replay <data>/logs/session-….json`: re-run a saved session offline.
+- `--config FILE`, `--data DIR`: another config, or another data directory.
 - `--console`: the terminal console instead of the dashboard.
 - `--fast-start`, `--timings`, `--print-cmd`.
 
 Console commands: `/depth quick|standard|deep`, `/web off|on` (kill switch), `/feed`, `/prompt` (the raw prompt after the chat template), `/export`, `/reset`, `/exit`. Ctrl-C during an answer is the Stop button; the partial answer is kept.
 
-## The dashboard (`perseus/web/`, `perseus/server.py`, `perseus/dashboard.py`)
+## The dashboard (`perseus/web/`)
 
 A port of the "Perseus Chat Interface" design canvas into plain HTML, CSS and JavaScript (no build step, no framework), served by Perseus itself.
 
@@ -85,7 +86,7 @@ Chats live in memory on the box and vanish at teardown; "Export all chats" downl
 
 **API** (for scripts; `Authorization: Bearer <token>`): `GET /api/state` · `PATCH /api/settings` · `POST /api/model/apply {"context": N}` · `GET|POST|DELETE /api/chats` · `GET|DELETE /api/chats/<id>` · `POST /api/chats/<id>/messages {"text"}` (a server-sent-events stream of `start`, `text`, `tool` and `done` events) · `POST /api/chats/<id>/stop` · `GET /api/chats/<id>/raw/<message id>` · `GET /api/export` · `GET /healthz`.
 
-## The tool loop (`perseus/engine.py`)
+## The tool loop (`perseus/engine/`)
 
 | Step | Rule | If it fails |
 | --- | --- | --- |
@@ -97,7 +98,7 @@ Chats live in memory on the box and vanish at teardown; "Export all chats" downl
 | Label | Web results are wrapped as untrusted content (a page can't fake the end marker). Instruction-like phrases get a warning badge in the feed. | — |
 | Budget | Each result is capped in tokens. On small GPUs older results shrink to title, URL and excerpt for the model; the feed and export keep the full text. | — |
 
-## The web gateway (`perseus/gateway.py`, `perseus/netpolicy.py`)
+## The web gateway (`perseus/safety/`)
 
 Every rule is re-applied to every redirect hop:
 
@@ -115,13 +116,13 @@ Behind the gateway, the **socket guard** refuses any other outbound connection f
 
 ## Writing tools
 
-Copy `tools/_example.py` to `tools/<name>.py`. Files there load at boot and reload before each answer when they change.
+Each tool is one file in `perseus/tools/`. Copy `perseus/tools/_example.py` to `perseus/tools/<name>.py`. Files there load at boot and reload before each answer when they change.
 
 - A file that imports network, process or FFI libraries (`socket`, `urllib`, `requests`, `subprocess`, `ctypes`, `os.system`, …) is refused.
 - Tools reach the web only through `ctx.gateway`, and search only through `ctx.search`.
 - Mark web-reading tools `lookup=True`. They then count toward research depth and their results are labelled untrusted.
 
-## Sizing rules (`perseus/sizing.py`)
+## Sizing rules (`setup/sizing.py`)
 
 1. Weights are what the repo ships (file sizes), or params × 1 byte for online FP8.
 2. Quantization: the repo's own if it has one; else bf16 if it fits; else FP8 on compute 8.9+; else CPU offload (opt-in, single GPU); else stop and print what would fit.
@@ -137,55 +138,87 @@ Copy `tools/_example.py` to `tools/<name>.py`. Files there load at boot and relo
 
 These were written against vLLM 0.32.0 and SearXNG without running them on a GPU; check each one once:
 
-- [ ] `vllm serve --help` still has every flag in `launcher.build_vllm_cmd`, and `VLLM_API_KEY` is still read from the environment.
-- [ ] The parser names in `perseus/parsers.py` are valid choices.
-- [ ] Streamed reasoning arrives as `reasoning_content` or `reasoning` (`perseus/llm.py` reads both).
-- [ ] `requirements/driver.min` matches the CUDA runtime in torch 2.13.0.
-- [ ] SearXNG starts with `python -m searx.webapp` and answers `/healthz` (`perseus/searxng.py`).
+- [ ] `vllm serve --help` still has every flag in `perseus/model/launch.py`, and `VLLM_API_KEY` is still read from the environment.
+- [ ] The parser names in `perseus/model/parsers.py` are valid choices.
+- [ ] Streamed reasoning arrives as `reasoning_content` or `reasoning` (`perseus/model/client.py` reads both).
+- [ ] `setup/driver.min` matches the CUDA runtime in torch 2.13.0.
+- [ ] SearXNG starts with `python -m searx.webapp` and answers `/healthz` (`perseus/search.py`).
 - [ ] Download progress counts Xet's in-progress bytes (otherwise the ETA starts late).
 - [ ] Measured KV-cache size is close to preflight's estimate; tune `RESERVE_*` if not.
-- [ ] Thinking controls: Qwen3 honours `chat_template_kwargs.enable_thinking`, and gpt-oss honours `reasoning_effort` (`perseus/dashboard.py`).
+- [ ] Thinking controls: Qwen3 honours `chat_template_kwargs.enable_thinking`, and gpt-oss honours `reasoning_effort` (`perseus/web/dashboard.py`).
 - [ ] View raw renders the prompt with the model's own tokenizer (needs `transformers`, installed with vLLM).
 - [ ] Record three cold boots: `python perseus.py --timings`.
 
 ## Layout
 
+Two trees are kept apart: the checkout you cloned (code and config), and a data directory that preflight creates on the fastest local disk (weights, logs, run state). Nothing large or secret lands in the checkout.
+
+**The checkout**
+
 ```
-preflight.sh            bash entry: ordering, installs, timings
-perseus.py              entry: re-runs itself under .venv, then perseus.launcher
-perseus/config.py       perseus.toml schema and validation
-perseus/hardware.py     GPUs, driver, NVLink/PCIe, RAM, disks
-perseus/hub.py          Hub metadata, exact file list, remote-code and template checks
-perseus/sizing.py       TP, quantization, context, small-GPU profile
-perseus/parsers.py      tool-call / reasoning parser per model family
-perseus/download.py     Xet download, progress, verification, token scrub
-perseus/preflight.py    check / smoke / searxng / download stages
-perseus/launcher.py     boot order, vLLM command, parse check
-perseus/supervisor.py   restarts with backoff, OOM explanation, process groups
-perseus/selftest.py     boot refusal checks, fail closed
-perseus/netpolicy.py    URL, address and secret rules (pure functions)
-perseus/gateway.py      the read-only HTTP client with pinned IPs
-perseus/socketguard.py  in-process egress guard
-perseus/htmltext.py     HTML to text
-perseus/searxng.py      local search client and process command
-perseus/tools/          registry, schema validation, built-in tools, hot reload
-perseus/engine.py       the tool loop
-perseus/feed.py         tool feed events and export
-perseus/llm.py          vLLM streaming client (tool calls reassembled)
-perseus/session.py      recording, export, offline replay
-perseus/console.py      terminal front end (--console)
-perseus/dashboard.py    chats, settings and turns for the dashboard
-perseus/server.py       dashboard HTTP server: auth, API, streaming
-perseus/web/            the dashboard page, styles, script and logos
-perseus/devtools.py     raw prompt after the chat template
-tools/_example.py       template for your own tools
-tests/                  python3 -m unittest discover -s tests -t .
+perseus/                     # project root (the git repo)
+├── perseus.toml             # your config: git-ignored, mode 600
+├── perseus.example.toml     # committed template documenting every key
+├── .perseus-data            # git-ignored: one line, where preflight put the data directory
+├── preflight.sh             # entry point 1
+├── perseus.py               # entry point 2: thin, runs the perseus/ package
+├── uv.lock                  # pinned Python dependencies
+├── setup/                   # everything preflight runs
+│   ├── check_config.py      # schema + Hub checks, sizing, data directory (--check); GPU smoke test
+│   ├── sizing.py            # TP, dtype, context, small-GPU profile
+│   ├── hardware.py          # GPUs, driver, NVLink/PCIe, RAM, disks
+│   ├── hub.py               # Hub metadata, exact file list, remote-code and template checks
+│   ├── download.py          # Xet download, progress, verification, token scrub
+│   ├── install_searxng.sh
+│   ├── install_driver.sh    # opt-in, VM only
+│   ├── searxng.settings.yml # template, filled in per box
+│   ├── pins.env             # uv, Python and SearXNG pins
+│   └── driver.min
+├── perseus/                 # the Python package
+│   ├── config.py            # loads perseus.toml + perseus.resolved.toml; the data directory
+│   ├── launcher.py          # boot order (what perseus.py runs)
+│   ├── model/               # launch vLLM, parser selection, health, client, raw prompt view
+│   ├── engine/              # tool loop, validation, budgets, depth limit, feed, replay, tool loader
+│   ├── tools/               # one file per tool; no network imports
+│   │   ├── __init__.py      # registry + @tool decorator
+│   │   ├── calculator.py
+│   │   ├── current_time.py
+│   │   ├── web_search.py
+│   │   ├── fetch_url.py
+│   │   └── _example.py      # template; files starting with _ aren't loaded
+│   ├── safety/              # gateway, URL and secret rules, socket guard, HTML to text, selftest
+│   ├── search.py            # SearXNG client (one fixed loopback address)
+│   ├── supervisor.py
+│   ├── console.py           # terminal front end (--console)
+│   ├── timing.py            # boot timings
+│   └── web/                 # HTTP routes, SSE, dashboard state; static/ holds the page
+└── tests/                   # python3 -m unittest discover -s tests -t .
+    ├── test_gateway_refusals.py
+    ├── test_tool_imports.py
+    └── …
 ```
 
-Tests need no GPU, no network and no extra packages (122 tests, about 12 s). To dry-run the whole preflight check:
+**The data directory** (created by preflight)
+
+```
+<fastest disk>/perseus/      # e.g. /mnt/nvme/perseus; ../perseus-data if the checkout's disk is the best
+├── weights/<org>/<model>/   # the download; HF token removed afterwards
+├── perseus.resolved.toml    # auto-detected sizing + this data path
+├── logs/                    # preflight.log, vllm.log, searxng.log, gateway.jsonl, boot-times.jsonl, sessions
+├── searxng/                 # its source, venv and settings
+└── run/                     # PIDs, per-boot vLLM key and dashboard link (mode 600, removed at shutdown),
+                             # download plan and status, Hugging Face and vLLM caches
+```
+
+- `[storage] data_dir = "auto"` picks the fastest disk with room: known NVMe first, then the most free space. An explicit path works too, but one inside the checkout is refused.
+- Re-running preflight on the same box keeps the data directory it chose before, as long as it still fits.
+- Both entry points read `./perseus.toml` from the folder they run in. `--config FILE` points elsewhere; the data directory for that config is recorded beside it. `perseus.py --data DIR` overrides the recorded one.
+- The Python environment (`.venv`, about 10 GB with vLLM) is the one large thing left in the checkout. preflight needs it before it can choose the data directory. Set `UV_PROJECT_ENVIRONMENT` before running both entry points to move it.
+
+Tests need no GPU, no network and no extra packages (128 tests, about 12 s). To dry-run the whole preflight check:
 
 ```bash
-PERSEUS_FAKE_HW=tests/fixtures/hw_1x4090.json python3 -m perseus.preflight check --meta-file tests/fixtures/meta_qwen25_32b_awq.json
+PERSEUS_FAKE_HW=tests/fixtures/hw_1x4090.json python3 -m setup.check_config check --meta-file tests/fixtures/meta_qwen25_32b_awq.json
 ```
 
 ## Secrets

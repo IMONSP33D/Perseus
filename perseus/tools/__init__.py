@@ -1,6 +1,9 @@
-"""Tool registry.
+"""Tool registry: the only Perseus API a tool imports.
 
-A tool is a plain Python function with a JSON Schema, registered with @tool:
+Each built-in tool is one file in this folder. A tool is a plain Python
+function with a JSON Schema, registered with @tool:
+
+    from perseus.tools import ToolFailure, tool
 
     @tool(description="Add two numbers.",
           parameters={"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}},
@@ -8,24 +11,25 @@ A tool is a plain Python function with a JSON Schema, registered with @tool:
     def add(ctx, a, b):
         return {"sum": a + b}
 
-Rules every tool follows (a test enforces the first two):
+Rules every tool follows (the loader and tests/test_tool_imports.py enforce the first two):
   * no network or process libraries: web access only through `ctx.gateway`,
     search only through `ctx.search`
   * no file writes; return data, don't act
   * return a dict or a string; raise ToolFailure with a message for the model
+
+Files here are loaded, and hot-reloaded when they change, by
+perseus.engine.tool_loader; files starting with "_" are skipped (see _example.py).
 """
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
-import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .schema import check_schema, validate, with_defaults
+from perseus.engine.schema import check_schema, validate, with_defaults
+
+TOOLS_DIR = Path(__file__).resolve().parent
 
 
 class ToolFailure(Exception):
@@ -50,8 +54,8 @@ class Tool:
 @dataclass
 class ToolContext:
     """What a tool may use. Built by the engine; tools never construct clients."""
-    gateway: Any = None          # perseus.gateway.Gateway
-    search: Any = None           # perseus.searxng.SearchClient
+    gateway: Any = None          # perseus.safety.gateway.Gateway
+    search: Any = None           # perseus.search.SearchClient
     limits: dict = field(default_factory=dict)
     engines: list[str] | None = None   # search engines chosen in the dashboard; None = all configured
 
@@ -105,85 +109,7 @@ def tool(name: str | None = None, *, description: str, parameters: dict, lookup:
 
 
 def load_builtin() -> Registry:
-    from . import builtin  # noqa: F401  registers on import
+    """Load every tool file in this folder into REGISTRY (once; later calls reload changed files)."""
+    from perseus.engine.tool_loader import default_loader
+    default_loader().refresh()
     return REGISTRY
-
-
-class UserTools:
-    """Hot reload for tools/*.py in the clone: re-imported when a file changes (checked before each turn)."""
-
-    def __init__(self, directory: Path, registry: Registry = REGISTRY):
-        self.dir, self.registry = directory, registry
-        self._mtimes: dict[Path, float] = {}
-        self.errors: dict[str, str] = {}
-
-    def refresh(self) -> list[str]:
-        """Reload changed files. Returns a line per change for the tool feed."""
-        changes = []
-        files = {p: p.stat().st_mtime for p in sorted(self.dir.glob("*.py")) if not p.name.startswith("_")} \
-            if self.dir.is_dir() else {}
-        for p in list(self._mtimes):
-            if p not in files:
-                self.registry.remove_source(_modname(p))
-                del self._mtimes[p]
-                changes.append(f"removed tools from {p.name}")
-        for p, mtime in files.items():
-            if self._mtimes.get(p) == mtime:
-                continue
-            self._mtimes[p] = mtime
-            mod = _modname(p)
-            problem = import_problem(p)
-            if problem:
-                self.errors[p.name] = problem
-                changes.append(f"refused {p.name}: {problem}")
-                continue
-            self.registry.remove_source(mod)
-            try:
-                spec = importlib.util.spec_from_file_location(mod, p)
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[mod] = module
-                spec.loader.exec_module(module)
-                self.errors.pop(p.name, None)
-                changes.append(f"loaded {p.name}")
-            except Exception as e:  # a broken user tool never takes the engine down
-                self.registry.remove_source(mod)
-                self.errors[p.name] = f"{type(e).__name__}: {e}"
-                changes.append(f"failed to load {p.name}: {type(e).__name__}: {e}")
-        return changes
-
-
-def _modname(p: Path) -> str:
-    return f"perseus_user_tools.{p.stem}"
-
-
-BANNED_IMPORTS = {"socket", "_socket", "ssl", "_ssl", "http", "urllib", "urllib3", "requests", "httpx", "aiohttp",
-                  "subprocess", "_posixsubprocess", "asyncio", "multiprocessing", "ctypes", "cffi", "pycurl",
-                  "websocket", "websockets", "ftplib", "smtplib", "telnetlib", "paramiko", "pty", "importlib"}
-BANNED_OS_CALLS = re.compile(r"^(system|popen|exec\w*|spawn\w*|fork\w*|posix_spawn\w*)$")
-
-
-def import_problem(path: Path) -> str | None:
-    """Static check: a tool file may not import network, process or FFI libraries."""
-    import ast
-    try:
-        tree = ast.parse(path.read_text(), filename=str(path))
-    except SyntaxError as e:
-        return f"syntax error line {e.lineno}"
-    for node in ast.walk(tree):
-        names = []
-        if isinstance(node, ast.Import):
-            names = [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names = [node.module]
-        elif isinstance(node, ast.Call) and getattr(node.func, "id", "") in ("__import__", "exec", "eval", "compile"):
-            return f"line {node.lineno}: {node.func.id}() isn't allowed in tools"
-        elif (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "os"
-              and BANNED_OS_CALLS.match(node.attr)):
-            return f"line {node.lineno}: os.{node.attr} runs programs; tools return data, they don't run commands"
-        for n in names:
-            root = n.split(".")[0]
-            if n in BANNED_IMPORTS or root in BANNED_IMPORTS:
-                return f"line {node.lineno}: imports {n!r}; tools reach the web only through ctx.gateway"
-        if isinstance(node, ast.ImportFrom) and node.module == "os" and any(BANNED_OS_CALLS.match(a.name) for a in node.names):
-            return f"line {node.lineno}: imports a process-running function from os"
-    return None

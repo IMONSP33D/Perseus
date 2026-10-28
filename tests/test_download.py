@@ -5,7 +5,7 @@ import types
 import unittest
 from pathlib import Path
 
-from perseus import download as dl
+from setup import download as dl
 
 
 def fake_hub(write_files: dict[str, int], fail: bool = False):

@@ -1,12 +1,12 @@
-"""Preflight stages, called by preflight.sh in this order:
+"""Preflight's Python stages (run by preflight.sh; `bash preflight.sh --check` runs only `check`):
 
-  check     config, driver, hardware, Hub metadata, sizing, disk -> perseus.resolved.toml
-            (seconds; nothing installed or downloaded yet)
-  smoke     after vLLM installs: torch sees every GPU and can allocate on each
-  searxng   write SearXNG's settings.yml for this box
-  download  fetch the planned files, verify sizes, remove the HF token from caches
+  check             config schema, driver, hardware, Hub metadata, sizing, disk
+                    -> picks the data directory, writes <data>/perseus.resolved.toml and
+                    records the data directory beside perseus.toml (seconds; nothing installed)
+  smoke             after vLLM installs: torch sees every GPU and can allocate on each
+  searxng-settings  write <data>/searxng/settings.yml for this box
 
-Only this module and preflight.sh ever read [secrets].
+The download is setup/download.py. Only setup/ and preflight.sh ever read [secrets].
 """
 
 from __future__ import annotations
@@ -20,16 +20,18 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import CONFIG_PATH, LOG_DIR, RESOLVED_PATH, ROOT, STATE_DIR, tomlw
-from .config import Config, ConfigError, load, split_overrides
-from .hardware import GIB, HardwareError, detect, driver_ok, pick_model_dir
-from .hub import HubClient, HubError, inspect
-from .parsers import ParserError, pick
-from .sizing import ModelMeta, SizingError, resolve
+from perseus import ROOT
+from perseus.config import (Config, ConfigError, Paths, default_config_path, dumps, find_paths, load,
+                            record_data_dir, split_overrides)
+from setup.hardware import GIB, HardwareError, detect, driver_ok, pick_data_dir
+from setup.hub import HubClient, HubError, inspect
+from perseus.model.parsers import ParserError, pick
+from perseus.model.meta import ModelMeta
+from setup.sizing import SizingError, resolve
 
-PLAN_PATH = STATE_DIR / "download-plan.json"
-STATUS_PATH = STATE_DIR / "download-status.json"
-DRIVER_MIN = ROOT / "requirements" / "driver.min"
+SETUP_DIR = Path(__file__).resolve().parent
+DRIVER_MIN = SETUP_DIR / "driver.min"
+SEARXNG_TEMPLATE = SETUP_DIR / "searxng.settings.yml"
 
 EXIT = {"config": 2, "hardware": 3, "hub": 4, "sizing": 5, "disk": 6, "gpu": 7, "download": 8}
 
@@ -68,22 +70,22 @@ def cmd_check(args, overrides) -> None:
     t0 = time.monotonic()
     section("Config")
     try:
-        cfg = load(CONFIG_PATH, overrides)
+        cfg = load(args.config, overrides)
     except ConfigError as e:
         for p in e.problems:
             print(f"  ✗ {p}", file=sys.stderr)
         sys.exit(EXIT["config"])
     m = cfg["model"]
-    ok(f"perseus.toml valid: {m['id']}@{m['revision']}")
+    ok(f"{args.config.name} valid: {m['id']}@{m['revision']}")
     for w in cfg.warnings:
         warn(w)
-    if CONFIG_PATH.exists() and CONFIG_PATH.stat().st_mode & 0o077:
-        os.chmod(CONFIG_PATH, 0o600)
-        warn("perseus.toml was readable by other users; set to 600")
+    if args.config.exists() and args.config.stat().st_mode & 0o077:
+        os.chmod(args.config, 0o600)
+        warn(f"{args.config.name} was readable by other users; set to 600")
 
     section("Hardware")
     try:
-        hw = detect(ROOT)
+        hw = detect(ROOT)  # the checkout's own disk is a candidate too
     except HardwareError as e:
         fail("hardware", str(e))
     if not hw.gpus:
@@ -145,30 +147,58 @@ def cmd_check(args, overrides) -> None:
     for w in res.warnings:
         warn(w)
 
-    section("Disk")
-    need = int(total * 1.05) + 5 * GIB
+    section("Data directory")
+    need = int(total * 1.05) + 5 * GIB   # weights + headroom for logs, SearXNG and caches
     try:
-        if cfg["storage"]["model_dir"] != "auto":
-            base = Path(cfg["storage"]["model_dir"])
-            base.mkdir(parents=True, exist_ok=True)
-            free = os.statvfs(base).f_bavail * os.statvfs(base).f_frsize
-            if free < need:
-                raise HardwareError(f"{base} has {free / GIB:.0f} GiB free; need {need / GIB:.0f} GiB")
-            model_dir = base / _slug(meta.repo_id)
+        if cfg["storage"]["data_dir"] != "auto":
+            data = Path(cfg["storage"]["data_dir"])
+            if data.resolve() == ROOT or ROOT in data.resolve().parents:
+                fail("disk", f"data_dir {data} is inside the checkout ({ROOT})",
+                     ["nothing large or secret belongs in the git checkout: pick a path outside it, or \"auto\""])
+            data.mkdir(parents=True, exist_ok=True)
+            st = os.statvfs(data)
+            free = st.f_bavail * st.f_frsize
+            have = _already_downloaded(Paths(data), meta.repo_id)
+            if free + have < need:
+                raise HardwareError(f"{data} has {free / GIB:.0f} GiB free; need {need / GIB:.0f} GiB")
         else:
-            base, disk = pick_model_dir(hw.disks, need, ROOT)
-            model_dir = base / _slug(meta.repo_id)
+            data, disk = _reuse_or_pick(args.config, hw, need, meta.repo_id)
             kind = "NVMe" if disk.nvme else ("disk" if disk.nvme is False else "volume")
             ok(f"{disk.mount}: {disk.free_bytes / GIB:.0f} GiB free ({kind}); need {need / GIB:.0f} GiB")
     except HardwareError as e:
         fail("disk", str(e))
-    ok(f"model directory: {model_dir}")
+    paths = Paths(data).ensure()
+    model_dir = paths.model_dir(meta.repo_id)
+    ok(f"data directory: {paths.data} (weights in {model_dir.relative_to(paths.data)})")
 
-    _write_resolved(cfg, hw, meta, res, tool_parser, reasoning_parser, model_dir)
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    PLAN_PATH.write_text(json.dumps({"repo": meta.repo_id, "sha": meta.revision_sha, "dest": str(model_dir),
-                                     "files": insp.download}, indent=1))
-    print(f"\nChecks passed in {time.monotonic() - t0:.1f}s → {RESOLVED_PATH.name}")
+    _write_resolved(cfg, hw, meta, res, tool_parser, reasoning_parser, paths, model_dir)
+    (paths.run / "download-plan.json").write_text(json.dumps(
+        {"repo": meta.repo_id, "sha": meta.revision_sha, "dest": str(model_dir), "files": insp.download}, indent=1))
+    pointer = record_data_dir(args.config, paths.data)
+    print(f"\nChecks passed in {time.monotonic() - t0:.1f}s → {paths.resolved} (recorded in {pointer.name})")
+
+
+def _already_downloaded(paths: Paths, repo_id: str) -> int:
+    from setup.download import dir_bytes
+    d = paths.model_dir(repo_id)
+    return dir_bytes(d) if d.is_dir() else 0
+
+
+def _reuse_or_pick(config: Path, hw, need: int, repo_id: str):
+    """Keep the data directory from an earlier run on this box if it still fits; else pick the fastest disk."""
+    from setup.hardware import Disk
+    try:
+        prev = find_paths(config).data
+    except ConfigError:
+        prev = None
+    if prev is not None:
+        st = os.statvfs(prev)
+        free = st.f_bavail * st.f_frsize
+        if free + _already_downloaded(Paths(prev), repo_id) >= need:
+            mount = next((d for d in sorted(hw.disks, key=lambda d: -len(d.mount))
+                          if str(prev).startswith(d.mount.rstrip("/") + "/") or str(prev) == d.mount), None)
+            return prev, mount or Disk(str(prev), free, None)
+    return pick_data_dir(hw.disks, need, ROOT)
 
 
 def _params(meta: ModelMeta) -> str:
@@ -178,12 +208,10 @@ def _params(meta: ModelMeta) -> str:
     return f"{p / 1e9:.0f}B" if p >= 1e9 else f"{p / 1e6:.0f}M"
 
 
-def _slug(repo: str) -> str:
-    return repo.replace("/", "--")
-
-
-def _write_resolved(cfg: Config, hw, meta: ModelMeta, res, tool_parser, reasoning_parser, model_dir: Path) -> None:
+def _write_resolved(cfg: Config, hw, meta: ModelMeta, res, tool_parser, reasoning_parser, paths: Paths,
+                    model_dir: Path) -> None:
     sections = {
+        "data": {"dir": str(paths.data), "config": str(cfg.path.resolve()) if cfg.path else ""},
         "model": {"id": meta.repo_id, "revision_sha": meta.revision_sha, "path": str(model_dir),
                   "model_type": meta.model_type, "max_positions": meta.max_positions, "thinks": meta.thinks},
         "vllm": {"tensor_parallel_size": res.tensor_parallel, "weights": res.weights,
@@ -208,12 +236,12 @@ def _write_resolved(cfg: Config, hw, meta: ModelMeta, res, tool_parser, reasonin
     header = (f"Written by preflight at {datetime.now(timezone.utc).isoformat(timespec='seconds')}.\n"
               "Generated file: edit perseus.toml and re-run `bash preflight.sh`, not this file.\n"
               "Holds no secrets; perseus.py reads only this file.")
-    RESOLVED_PATH.write_text(tomlw.dumps(sections, header))
+    paths.resolved.write_text(dumps(sections, header))
 
 
 def _inspection_from_file(path: Path):
     """Offline dry run: a JSON file with ModelMeta fields plus `download` sizes."""
-    from .hub import Inspection
+    from setup.hub import Inspection
     d = json.loads(path.read_text())
     download = d.pop("download")
     return Inspection(ModelMeta(**d), download, [], "", [])
@@ -227,10 +255,10 @@ def cmd_smoke(args, overrides) -> None:
         import torch
     except ImportError:
         fail("gpu", "torch isn't installed in .venv; the vLLM install step didn't complete")
-    expected = len(detect(ROOT).gpus)
+    expected = len(detect().gpus)
     if not torch.cuda.is_available():
         fail("gpu", f"torch {torch.__version__} can't use CUDA on this driver",
-             ["the driver is likely older than the CUDA runtime in the torch wheel; raise requirements/driver.min"])
+             ["the driver is likely older than the CUDA runtime in the torch wheel; raise setup/driver.min"])
     seen = torch.cuda.device_count()
     if seen != expected:
         fail("gpu", f"torch sees {seen} GPU(s), nvidia-smi sees {expected}", ["check CUDA_VISIBLE_DEVICES"])
@@ -242,53 +270,21 @@ def cmd_smoke(args, overrides) -> None:
     ok(f"torch {torch.__version__} (CUDA {torch.version.cuda}): {seen} GPU(s), allocation OK on each")
 
 
-# --------------------------------------------------------------------------- searxng
+# --------------------------------------------------------------------------- searxng settings
 
-SEARXNG_DIR = STATE_DIR / "searxng"
-
-
-def cmd_searxng(args, overrides) -> None:
+def cmd_searxng_settings(args, overrides) -> None:
     import tomllib
-    resolved = tomllib.loads(RESOLVED_PATH.read_text())
+    paths = find_paths(args.config)
+    resolved = tomllib.loads(paths.resolved.read_text())
     port, engines = resolved["search"]["port"], resolved["search"]["engines"]
-    template = (ROOT / "searxng" / "settings.template.yml").read_text()
-    out = (template.replace("@PORT@", str(port))
-                   .replace("@SECRET@", secrets.token_hex(32))
-                   .replace("@ENGINES@", "\n".join(f"      - {e}" for e in engines)))
-    SEARXNG_DIR.mkdir(parents=True, exist_ok=True)
-    path = SEARXNG_DIR / "settings.yml"
+    out = (SEARXNG_TEMPLATE.read_text().replace("@PORT@", str(port))
+           .replace("@SECRET@", secrets.token_hex(32))
+           .replace("@ENGINES@", "\n".join(f"      - {e}" for e in engines)))
+    paths.searxng.mkdir(parents=True, exist_ok=True)
+    path = paths.searxng / "settings.yml"
     path.write_text(out)
     os.chmod(path, 0o600)
     ok(f"SearXNG settings: 127.0.0.1:{port}, engines {', '.join(engines)}")
-
-
-# --------------------------------------------------------------------------- download
-
-def cmd_download(args, overrides) -> None:
-    from .download import DownloadError, download, is_complete, scrub_token, write_status
-    from .timing import record
-    section("Model download")
-    plan = json.loads(PLAN_PATH.read_text())
-    dest, files = Path(plan["dest"]), {k: int(v) for k, v in plan["files"].items()}
-    cfg = load(CONFIG_PATH, overrides)
-    token = cfg["secrets"]["hf_token"] or None
-    if is_complete(dest, plan["sha"], files):
-        ok(f"already downloaded and verified: {dest}")
-        write_status(STATUS_PATH, state="done", bytes=sum(files.values()), total=sum(files.values()))
-    else:
-        print(f"  {plan['repo']}@{plan['sha'][:12]} → {dest} ({sum(files.values()) / 1e9:.1f} GB, "
-              f"{len(files)} files)")
-        try:
-            secs = download(plan["repo"], plan["sha"], files, dest, token, STATUS_PATH,
-                            cfg["limits"]["warn_download_minutes"])
-        except DownloadError as e:
-            fail("download", str(e), ["re-run `bash preflight.sh`: finished files are kept and resumed"])
-        record("download", secs, bytes=sum(files.values()))
-        ok(f"downloaded and verified in {secs / 60:.1f} min "
-           f"({sum(files.values()) / secs / 1e6:.0f} MB/s average)")
-    removed = scrub_token(token or "", Path(os.environ.get("HF_HOME", STATE_DIR / "hf")))
-    ok("HF token removed from Hugging Face caches" + (f" ({', '.join(removed)})" if removed else
-                                                     " (none stored: Perseus never logs in)"))
 
 
 # --------------------------------------------------------------------------- main
@@ -300,16 +296,21 @@ def main(argv: list[str] | None = None) -> None:
     except ConfigError as e:
         print(f"  ✗ {e}", file=sys.stderr)
         sys.exit(EXIT["config"])
-    p = argparse.ArgumentParser(prog="python -m perseus.preflight")
+    p = argparse.ArgumentParser(prog="python -m setup.check_config")
+    p.add_argument("--config", type=Path, default=default_config_path(), help="perseus.toml to use")
     sub = p.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("check")
     c.add_argument("--meta-file", help="offline dry run: model metadata JSON instead of the Hub")
     sub.add_parser("smoke")
-    sub.add_parser("searxng")
-    sub.add_parser("download")
+    sub.add_parser("searxng-settings")
     args = p.parse_args(rest)
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    {"check": cmd_check, "smoke": cmd_smoke, "searxng": cmd_searxng, "download": cmd_download}[args.cmd](args, overrides)
+    args.config = args.config.expanduser().absolute()
+    try:
+        {"check": cmd_check, "smoke": cmd_smoke, "searxng-settings": cmd_searxng_settings}[args.cmd](args, overrides)
+    except ConfigError as e:
+        for prob in e.problems:
+            print(f"  ✗ {prob}", file=sys.stderr)
+        sys.exit(EXIT["config"])
 
 
 if __name__ == "__main__":

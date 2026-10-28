@@ -1,4 +1,11 @@
-"""Load and validate perseus.toml.
+"""perseus.toml (the config), perseus.resolved.toml (what preflight decided) and the data directory.
+
+Two trees are kept apart: the checkout you cloned (code and perseus.toml) and
+a data directory preflight creates on the fastest local disk (weights, logs,
+SearXNG, run state). Preflight records the data directory in a one-line
+pointer file beside perseus.toml, so perseus.py never guesses.
+
+Config validation:
 
 Every error names the file, line and key so a bad value is caught in seconds,
 not after a long download. Unknown keys are errors too (typos silently ignored
@@ -91,7 +98,7 @@ def _hf_token(v: str) -> str | None:
     return None if HF_TOKEN_RE.match(v) else "doesn't look like a Hugging Face token (hf_ followed by letters and digits)"
 
 
-def _model_dir(v: str) -> str | None:
+def _data_dir(v: str) -> str | None:
     return None if v == "auto" or v.startswith("/") else "must be \"auto\" or an absolute path"
 
 
@@ -120,7 +127,7 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "hf_token": Key((str,), "", check=_hf_token, secret=True),
     },
     "storage": {
-        "model_dir": Key((str,), "auto", check=_model_dir),
+        "data_dir": Key((str,), "auto", check=_data_dir),
     },
     "server": {
         "bind": Key((str,), "127.0.0.1"),
@@ -289,3 +296,123 @@ def _closest(key: str, known: dict) -> str | None:
     import difflib
     match = difflib.get_close_matches(key, list(known), n=1, cutoff=0.6)
     return match[0] if match else None
+
+
+# ---------------------------------------------------------------------------- TOML writer
+# (stdlib reads TOML but can't write it; resolved files only need flat sections)
+
+def _toml_value(v: Any) -> str:
+    import json
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, str):
+        return json.dumps(v)  # JSON string escapes are valid TOML basic strings
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    raise TypeError(f"can't write {type(v).__name__} to TOML")
+
+
+def dumps(sections: dict[str, dict[str, Any]], header: str = "") -> str:
+    out = [f"# {line}" for line in header.splitlines()] + ([""] if header else [])
+    for name, keys in sections.items():
+        out.append(f"[{name}]")
+        for k, v in keys.items():
+            if v is None:
+                continue
+            out.append(f"{k} = {_toml_value(v)}")
+        out.append("")
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------- the data directory
+
+DATA_POINTER = ".perseus-data"
+WEIGHTS_MARKER = ".perseus-complete.json"   # written beside the weights once every file is verified
+RESOLVED_NAME = "perseus.resolved.toml"
+
+
+@dataclass(frozen=True)
+class Paths:
+    """Everything Perseus writes at run time, under one directory on the fastest disk."""
+    data: Path
+
+    @property
+    def weights(self) -> Path:
+        return self.data / "weights"
+
+    @property
+    def resolved(self) -> Path:
+        return self.data / RESOLVED_NAME
+
+    @property
+    def logs(self) -> Path:
+        return self.data / "logs"
+
+    @property
+    def searxng(self) -> Path:
+        return self.data / "searxng"
+
+    @property
+    def run(self) -> Path:
+        """PIDs, the per-boot vLLM key and dashboard link (mode 600), download status, caches."""
+        return self.data / "run"
+
+    def model_dir(self, repo_id: str) -> Path:
+        org, _, name = repo_id.partition("/")
+        return self.weights / org / name
+
+    def ensure(self) -> "Paths":
+        import os
+        for d in (self.data, self.weights, self.logs, self.searxng, self.run):
+            d.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.run, 0o700)
+        return self
+
+    def write_secret(self, name: str, text: str) -> Path:
+        """A run/ file only this user can read (vLLM key, dashboard link)."""
+        import os
+        path = self.run / name
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(text + "\n")
+        os.chmod(path, 0o600)
+        return path
+
+
+def default_config_path() -> Path:
+    """Both entry points read ./perseus.toml from the directory they run in."""
+    return Path.cwd() / "perseus.toml"
+
+
+def pointer_path(config_path: Path) -> Path:
+    return config_path.resolve().parent / DATA_POINTER
+
+
+def record_data_dir(config_path: Path, data_dir: Path) -> Path:
+    p = pointer_path(config_path)
+    p.write_text(str(data_dir.resolve()) + "\n")
+    return p
+
+
+def find_paths(config_path: Path, override: Path | None = None) -> Paths:
+    """The data directory preflight recorded for this config (or --data DIR)."""
+    if override is not None:
+        return Paths(override.resolve())
+    p = pointer_path(config_path)
+    try:
+        data = Path(p.read_text().strip())
+    except OSError:
+        raise ConfigError([f"no data directory recorded for {config_path.name} yet: run bash preflight.sh"
+                           + (f" --config {config_path}" if config_path.resolve() != default_config_path() else "")])
+    if not data.is_dir():
+        raise ConfigError([f"the data directory {data} is gone (new instance?): run bash preflight.sh again"])
+    return Paths(data)
+
+
+def load_resolved(paths: Paths) -> dict:
+    try:
+        return tomllib.loads(paths.resolved.read_text())
+    except FileNotFoundError:
+        raise ConfigError([f"{paths.resolved} not found: run bash preflight.sh"])

@@ -3,7 +3,8 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from perseus import EXAMPLE_PATH, tomlw
+from perseus import EXAMPLE_PATH
+from perseus.config import dumps
 from perseus.config import ConfigError, load, parse_override_value, split_overrides
 
 GOOD = EXAMPLE_PATH.read_text().replace('"org/model-name"', '"Qwen/Qwen3-32B"').replace(
@@ -101,7 +102,7 @@ class Overrides(unittest.TestCase):
 class TomlWriter(unittest.TestCase):
     def test_round_trip(self):
         data = {"a": {"s": 'quo"te', "i": 3, "f": 0.9, "b": True, "l": ["x", "y"], "skip": None}}
-        back = tomllib.loads(tomlw.dumps(data, "header\nline two"))
+        back = tomllib.loads(dumps(data, "header\nline two"))
         self.assertEqual(back, {"a": {"s": 'quo"te', "i": 3, "f": 0.9, "b": True, "l": ["x", "y"]}})
 
 

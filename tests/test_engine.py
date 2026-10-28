@@ -6,13 +6,13 @@ import time
 import unittest
 from pathlib import Path
 
-from perseus.engine import Engine, EngineSettings, compact, injection_warning
-from perseus.feed import Feed
-from perseus.gateway import FetchResult
-from perseus.llm import Reply
-from perseus.netpolicy import Blocked
-from perseus.session import Recorder, replay
-from perseus.tools import Registry, ToolContext, ToolFailure, UserTools, import_problem, tool
+from perseus.engine.loop import Engine, EngineSettings, compact, injection_warning
+from perseus.engine.feed import Feed
+from perseus.safety.gateway import FetchResult
+from perseus.model.client import Reply
+from perseus.safety.netpolicy import Blocked
+from perseus.engine.session import Recorder, replay
+from perseus.tools import Registry, ToolContext, ToolFailure, tool
 
 
 def call(name, args, cid=None):
@@ -251,56 +251,6 @@ class Helpers(unittest.TestCase):
         c = compact(json.dumps({"url": "https://a.example/", "title": "A", "text": "x" * 5000}))
         self.assertIn("url: https://a.example/", c)
         self.assertLess(len(c), 700)
-
-
-class ImportBan(unittest.TestCase):
-    def test_builtin_tools_import_no_network_libraries(self):
-        tools_dir = Path(__file__).resolve().parent.parent / "perseus" / "tools"
-        for p in tools_dir.glob("*.py"):
-            if p.name == "__init__.py":  # the registry/loader itself (reviewed infrastructure, defines no tools)
-                continue
-            self.assertIsNone(import_problem(p), p.name)
-
-    def test_banned_imports_detected(self):
-        d = Path(tempfile.mkdtemp())
-        for src in ("import socket", "from urllib.request import urlopen", "import requests as r",
-                    "import subprocess", "__import__('http')", "from http import client", "import ctypes",
-                    "import _socket", "import os\nos.system('curl x')", "from os import popen", "import importlib",
-                    "import asyncio"):
-            (d / "t.py").write_text(src + "\n")
-            self.assertIsNotNone(import_problem(d / "t.py"), src)
-        (d / "t.py").write_text("import math, json, os\nfrom datetime import date\nx = os.path.join('a', 'b')\n")
-        self.assertIsNone(import_problem(d / "t.py"))
-
-    def test_hot_reload(self):
-        d = Path(tempfile.mkdtemp())
-        reg = Registry()
-        good = ("from perseus.tools import tool\n"
-                "@tool(description='d', parameters={'type': 'object', 'properties': {}})\n"
-                "def hello(ctx):\n    return 'hi'\n")
-        import perseus.tools as pt
-        orig = pt.REGISTRY
-        pt.REGISTRY = reg  # user files register into the default registry
-        try:
-            ut = UserTools(d, reg)
-            (d / "mine.py").write_text(good)
-            self.assertEqual(ut.refresh(), ["loaded mine.py"])
-            self.assertIn("hello", reg.names())
-            self.assertEqual(ut.refresh(), [])
-            (d / "evil.py").write_text("import socket\n")
-            self.assertTrue(ut.refresh()[0].startswith("refused evil.py"))
-            time.sleep(0.01)
-            (d / "mine.py").write_text(good.replace("hello", "hello2"))
-            import os
-            os.utime(d / "mine.py", (time.time() + 5, time.time() + 5))
-            ut.refresh()
-            self.assertIn("hello2", reg.names())
-            self.assertNotIn("hello", reg.names())
-            (d / "mine.py").unlink()
-            ut.refresh()
-            self.assertNotIn("hello2", reg.names())
-        finally:
-            pt.REGISTRY = orig
 
 
 if __name__ == "__main__":

@@ -1,8 +1,12 @@
 """Download exactly the planned files with the Xet parallel downloader.
 
-Progress (bytes, MB/s, ETA) goes to the terminal and to a status file that
-perseus.py reads while it waits. A marker file is written only after every
-file is present at its expected size.
+    python -m setup.download [--config perseus.toml]     (preflight.sh runs this as its last step)
+
+Reads the plan `check` wrote to <data>/run/download-plan.json and fetches into
+<data>/weights/<org>/<model>/. Progress (bytes, MB/s, ETA) goes to the terminal
+and to <data>/run/download-status.json, which perseus.py reads while it waits.
+A marker file is written only after every file is present at its expected size;
+then the HF token is removed from Hugging Face's caches.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ import time
 from pathlib import Path
 
 GB = 1000 ** 3
-MARKER = ".perseus-complete.json"
+from perseus.config import WEIGHTS_MARKER as MARKER  # noqa: E402
 
 
 class DownloadError(Exception):
@@ -162,3 +166,57 @@ def scrub_token(token: str, hf_home: Path) -> list[str]:
             stored.unlink()
         removed.append(f"{stored} ({', '.join(hits)})")
     return removed
+
+
+def main(argv: list[str] | None = None) -> None:
+    import argparse
+    import sys
+
+    from perseus import timing
+    from perseus.config import ConfigError, default_config_path, find_paths, load, split_overrides
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    rest, overrides = split_overrides(argv)
+    ap = argparse.ArgumentParser(prog="python -m setup.download")
+    ap.add_argument("--config", type=Path, default=default_config_path())
+    args = ap.parse_args(rest)
+    config = args.config.expanduser().absolute()
+
+    def fail(msg, *hints):
+        print(f"  ✗ {msg}", file=sys.stderr)
+        for h in hints:
+            print(f"      → {h}", file=sys.stderr)
+        sys.exit(8)
+
+    print("\nModel download")
+    try:
+        paths = find_paths(config)
+        cfg = load(config, overrides)
+    except ConfigError as e:
+        fail("; ".join(e.problems))
+    timing.configure(paths)
+    plan = json.loads((paths.run / "download-plan.json").read_text())
+    status = paths.run / "download-status.json"
+    dest, files = Path(plan["dest"]), {k: int(v) for k, v in plan["files"].items()}
+    token = cfg["secrets"]["hf_token"] or None
+    os.environ["HF_HOME"] = str(paths.run / "hf")
+    total = sum(files.values())
+    if is_complete(dest, plan["sha"], files):
+        print(f"  ✓ already downloaded and verified: {dest}")
+        write_status(status, state="done", bytes=total, total=total)
+    else:
+        print(f"  {plan['repo']}@{plan['sha'][:12]} → {dest} ({total / 1e9:.1f} GB, {len(files)} files)")
+        try:
+            secs = download(plan["repo"], plan["sha"], files, dest, token, status,
+                            cfg["limits"]["warn_download_minutes"])
+        except DownloadError as e:
+            fail(str(e), "re-run `bash preflight.sh`: finished files are kept and resumed")
+        timing.record("download", secs, bytes=total)
+        print(f"  ✓ downloaded and verified in {secs / 60:.1f} min ({total / secs / 1e6:.0f} MB/s average)")
+    removed = scrub_token(token or "", paths.run / "hf")
+    print("  ✓ HF token removed from Hugging Face caches"
+          + (f" ({', '.join(removed)})" if removed else " (none stored: Perseus never logs in)"))
+
+
+if __name__ == "__main__":
+    main()

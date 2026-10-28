@@ -4,9 +4,5 @@ from pathlib import Path
 
 __version__ = "0.1.0"
 
-ROOT = Path(__file__).resolve().parent.parent
-STATE_DIR = ROOT / ".perseus"
-LOG_DIR = ROOT / "logs"
-CONFIG_PATH = ROOT / "perseus.toml"
+ROOT = Path(__file__).resolve().parent.parent          # the git checkout: code and config only
 EXAMPLE_PATH = ROOT / "perseus.example.toml"
-RESOLVED_PATH = ROOT / "perseus.resolved.toml"

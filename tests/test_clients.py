@@ -3,8 +3,8 @@ import json
 import threading
 import unittest
 
-from perseus.llm import LLMClient, LLMError
-from perseus.searxng import SearchClient, SearchUnavailable
+from perseus.model.client import LLMClient, LLMError
+from perseus.search import SearchClient, SearchUnavailable
 
 
 class _H(http.server.BaseHTTPRequestHandler):

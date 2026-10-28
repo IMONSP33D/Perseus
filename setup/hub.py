@@ -12,7 +12,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .sizing import ModelMeta
+from perseus.model.meta import ModelMeta
 
 AUX_FILES = {
     "config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json",

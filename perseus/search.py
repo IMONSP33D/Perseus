@@ -13,7 +13,6 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import STATE_DIR
 
 
 class SearchUnavailable(Exception):
@@ -60,9 +59,9 @@ class SearchClient:
             return False
 
 
-def command(root: Path) -> tuple[list[str], dict[str, str]]:
-    """How to start SearXNG installed by preflight. VERIFY entry point on the pinned commit."""
-    sx = STATE_DIR / "searxng"
+def command(paths) -> tuple[list[str], dict[str, str]]:
+    """How to start the SearXNG preflight installed in <data>/searxng. VERIFY entry point on the pinned commit."""
+    sx = paths.searxng
     py = sx / "venv" / "bin" / "python"
     env = {"SEARXNG_SETTINGS_PATH": str(sx / "settings.yml"), "PYTHONDONTWRITEBYTECODE": "1"}
     return [str(py), "-m", "searx.webapp"], env

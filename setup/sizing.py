@@ -21,7 +21,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-from .hardware import GIB, Hardware
+from perseus.model.meta import ModelMeta
+from setup.hardware import GIB, Hardware
 
 GPU_MEM_UTIL = 0.90             # vLLM's default share of VRAM it may use
 RESERVE_TP1 = 1.5 * GIB         # activations + CUDA graphs on one GPU
@@ -40,34 +41,6 @@ class SizingError(Exception):
     def __init__(self, message: str, suggestions: list[str] | None = None):
         self.suggestions = suggestions or []
         super().__init__(message)
-
-
-@dataclass
-class ModelMeta:
-    repo_id: str
-    revision_sha: str
-    weight_bytes: int                    # sum of the safetensors files we will download
-    params_total: int | None             # from safetensors metadata (MoE: total, not active)
-    native_dtype: str                    # bf16 | fp16 | fp32 | fp8 | int8 | int4
-    quant_method: str | None             # repo is pre-quantized: fp8 | awq | gptq | mxfp4 | ...
-    num_layers: int
-    num_attention_heads: int
-    num_kv_heads: int
-    head_dim: int
-    max_positions: int
-    model_type: str = ""
-    architectures: list[str] = field(default_factory=list)
-    kv_lora_rank: int | None = None      # MLA (DeepSeek-style) latent KV
-    qk_rope_head_dim: int | None = None
-    thinks: bool = False                 # chat template emits <think> blocks
-    chat_template_tools: bool = True
-
-    @property
-    def is_mla(self) -> bool:
-        return bool(self.kv_lora_rank)
-
-    def to_dict(self) -> dict:
-        return asdict(self)
 
 
 @dataclass

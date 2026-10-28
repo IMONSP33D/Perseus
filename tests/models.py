@@ -1,7 +1,7 @@
 """Realistic model shapes and boxes for sizing tests (values from the repos' config.json)."""
 
-from perseus.hardware import GIB, GPU, Hardware
-from perseus.sizing import ModelMeta
+from setup.hardware import GIB, GPU, Hardware
+from perseus.model.meta import ModelMeta
 
 
 def box(n, vram_gib, cc=(9, 0), name="H100", interconnect=None, ram_gib=256):

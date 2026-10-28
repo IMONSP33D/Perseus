@@ -16,10 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from . import socketguard
-from .gateway import Gateway, GatewayError
-from .netpolicy import Blocked
-from .tools import Registry, import_problem
+from perseus.safety import socketguard
+from perseus.safety.gateway import Gateway, GatewayError
+from perseus.safety.netpolicy import Blocked
+from perseus.engine.tool_loader import import_problem
+from perseus.tools import Registry
 
 REBIND_NAME = "rebind-to-loopback.perseus-selftest.example"
 

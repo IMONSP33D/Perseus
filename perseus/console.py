@@ -10,8 +10,8 @@ import threading
 import time
 from pathlib import Path
 
-from .engine import Engine
-from .feed import ToolEvent
+from perseus.engine.loop import Engine
+from perseus.engine.feed import ToolEvent
 
 DIM, RESET, RED, YELLOW, GREEN = "\033[2m", "\033[0m", "\033[31m", "\033[33m", "\033[32m"
 MARK = {"ok": f"{GREEN}✓{RESET}", "cached": f"{GREEN}↺{RESET}", "blocked": f"{RED}⊘{RESET}",
@@ -105,7 +105,7 @@ class Console:
         return r.answer
 
     def export(self) -> Path:
-        from .session import Recorder
+        from perseus.engine.session import Recorder
         rec = self.recorder or Recorder()
         path = self.export_dir / f"session-{time.strftime('%Y%m%d-%H%M%S')}.json"
         return rec.export(path, self.history, self.engine.feed.export())
@@ -146,7 +146,7 @@ class Console:
         elif cmd == "/export":
             print(f"  saved {self.export()}")
         elif cmd == "/prompt" and self.model_dir:
-            from .devtools import render_prompt
+            from perseus.model.prompt_view import render_prompt
             try:
                 msgs = [self.engine.system_message(), *self.history]
                 text, n = render_prompt(self.model_dir, msgs, self.engine.registry.specs())

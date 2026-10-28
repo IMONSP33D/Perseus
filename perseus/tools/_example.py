@@ -1,6 +1,6 @@
-"""Template for your own tools. Copy to tools/<name>.py (no leading underscore) and edit.
+"""Template for your own tools. Copy to perseus/tools/<name>.py (no leading underscore) and edit.
 
-Files in tools/ load at boot and reload before each answer when they change.
+Files in perseus/tools/ load at boot and reload before each answer when they change.
 A file that imports network, process or FFI libraries is refused: tools reach
 the web only through ctx.gateway (read-only, checked) and ctx.search.
 Set lookup=True on any tool that reads the web, so it counts toward the

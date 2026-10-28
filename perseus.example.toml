@@ -1,5 +1,6 @@
 # Perseus configuration.
 # Copy to perseus.toml (git-ignored, mode 600) and fill in [model].id and [secrets].hf_token.
+# Both entry points read ./perseus.toml from the folder they run in; --config FILE points elsewhere.
 # Any key set to "auto" is decided by preflight from the hardware and the model;
 # a value you type here wins. CLI flags override one key for one run: --model.id org/name
 
@@ -19,7 +20,8 @@ reasoning_parser = "auto"    # auto | none | a vLLM reasoning parser name
 hf_token = "hf_..."          # read by preflight only; perseus.py never loads it
 
 [storage]
-model_dir = "auto"           # auto = fastest local disk with room; or an absolute path
+data_dir = "auto"            # auto = fastest local disk with room (weights, logs, SearXNG, run state);
+                             # or an absolute path. Never inside the checkout.
 
 [server]
 bind = "127.0.0.1"

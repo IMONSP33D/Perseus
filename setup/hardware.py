@@ -239,8 +239,11 @@ def _is_nvme(dev: str) -> bool | None:
         return None
 
 
-def pick_model_dir(disks: list[Disk], need_bytes: int, repo_root: Path) -> tuple[Path, Disk]:
-    """Fastest disk with room: known NVMe first, then most free space."""
+def pick_data_dir(disks: list[Disk], need_bytes: int, repo_root: Path) -> tuple[Path, Disk]:
+    """The data directory on the fastest disk with room: known NVMe first, then most free space.
+
+    Never inside the checkout: on the checkout's own disk it sits beside it (../perseus-data).
+    """
     fits = [d for d in disks if d.free_bytes >= need_bytes]
     if not fits:
         best = max(disks, key=lambda d: d.free_bytes, default=None)
@@ -249,9 +252,12 @@ def pick_model_dir(disks: list[Disk], need_bytes: int, repo_root: Path) -> tuple
                             f"{have}. Attach a larger local NVMe volume")
     best = sorted(fits, key=lambda d: (d.nvme is not True, -d.free_bytes))[0]
     root = str(repo_root)
-    if best.mount == "/" or root == best.mount or root.startswith(best.mount.rstrip("/") + "/"):
-        return repo_root / "models", best
-    return Path(best.mount) / "perseus-models", best
+    on_repo_disk = best.mount == root or root.startswith(best.mount.rstrip("/") + "/")
+    if on_repo_disk and os.access(repo_root.parent, os.W_OK):
+        return repo_root.parent / "perseus-data", best
+    if best.mount == "/" or on_repo_disk:
+        return Path.home() / "perseus-data", best
+    return Path(best.mount) / "perseus", best
 
 
 def version_tuple(v: str) -> tuple[int, ...]:

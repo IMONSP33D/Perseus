@@ -30,9 +30,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin
 
-from . import __version__, socketguard
-from .htmltext import html_to_text
-from .netpolicy import Blocked, Target, check_method, check_secrets, parse_url, redact, resolve
+from perseus import __version__
+from perseus.safety import socketguard
+from perseus.safety.htmltext import html_to_text
+from perseus.safety.netpolicy import Blocked, Target, check_method, check_secrets, parse_url, redact, resolve
 
 USER_AGENT = f"Perseus/{__version__} (read-only research agent; GET only)"
 REDIRECTS = {301, 302, 303, 307, 308}
