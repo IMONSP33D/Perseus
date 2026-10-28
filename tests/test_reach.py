@@ -33,6 +33,23 @@ class SelfCheck(unittest.TestCase):
         finally:
             srv.stop()
 
+    def test_passes_with_the_socket_guard_on(self):
+        # on the box the guard is installed before the dashboard starts; it refused the check
+        from perseus.safety import socketguard
+        dash, _, _ = make()
+        srv = Server(dash, "127.0.0.1", 0)
+        srv.start()
+        socketguard.install({1})                     # only an unrelated port allowed
+        try:
+            res = reach.self_check(srv.port, srv.token)
+            self.assertTrue(all(ok for ok, _ in res), res)
+            import socket
+            with self.assertRaises(PermissionError):  # still refused outside the check
+                socket.create_connection(("127.0.0.1", srv.port), timeout=2)
+        finally:
+            socketguard.uninstall()
+            srv.stop()
+
     def test_wrong_token_and_nothing_listening(self):
         dash, _, _ = make()
         srv = Server(dash, "127.0.0.1", 0)

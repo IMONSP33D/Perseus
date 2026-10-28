@@ -23,11 +23,17 @@ SELF = {"X-Perseus-Selfcheck": "1"}
 
 
 def _get(port: int, path: str, headers: dict | None = None, host: str = "127.0.0.1") -> http.client.HTTPResponse:
-    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    c.request("GET", path, headers={"Host": f"{host}:{port}", **SELF, **(headers or {})})
-    r = c.getresponse()
-    r.body = r.read()
-    c.close()
+    from perseus.safety import socketguard
+    # The socket guard refuses every connection but the gateway's and vLLM/SearXNG's; let this
+    # thread, for this one request, reach the dashboard's own port and nothing else.
+    with socketguard.permit("127.0.0.1", port):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            c.request("GET", path, headers={"Host": f"{host}:{port}", **SELF, **(headers or {})})
+            r = c.getresponse()
+            r.body = r.read()
+        finally:
+            c.close()
     return r
 
 
