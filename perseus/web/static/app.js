@@ -60,7 +60,7 @@
     chats: {},               // id -> full chat
     activeId: null,
     streams: {},             // chat id -> { controller }
-    closing: {},             // chat id -> close-out deadline (ms), while the model wraps up
+    closing: {},             // chat id -> true while the model writes its closed-out answer
     feedOpenTurns: {},       // chat id -> Set of earlier question numbers opened in the feed
     feedCleared: store.get('feedCleared', {}),   // chat id -> last event id hidden by Clear (display only)
     thinkOpen: {},           // message id -> bool
@@ -301,7 +301,7 @@
     const open = !!ui.thinkOpen[m.id];
     const kids = [];
     if (showThink) {
-      const status = wrapping ? 'Wrapping up…' : stillThinking ? 'Thinking…'
+      const status = wrapping ? (m.content ? 'Writing final answer…' : 'Wrapping up…') : stillThinking ? 'Thinking…'
         : (m.think_secs != null ? `Thought for ${Math.max(1, Math.round(m.think_secs))}s` : '');
       const brain = icon('brain'); brain.classList.add('brain');
       const chev = icon('chevron'); chev.classList.add('chev');
@@ -357,7 +357,7 @@
     const closed = { user: 'Closed out', budget: 'Thinking budget reached · wrapped up',
       length: 'Ran out of room while thinking · wrapped up' }[m.closed];
     if (closed) bits.push(h('span', { class: 'warn', text: closed }));
-    if (m.truncated) bits.push(h('span', { class: 'warn', text: m.closed === 'user' ? 'Cut off at the 10 s limit' : 'Cut off at the length limit · try Length: Long' }));
+    if (m.truncated) bits.push(h('span', { class: 'warn', text: 'Cut off at the length limit · try Length: Long' }));
     if (m.lookups) bits.push(h('span', { text: `${m.lookups} of ${m.limit} lookups` }));
     if (m.duration != null) bits.push(h('span', { text: `${m.duration.toFixed(1)} s` }));
     const u = m.usage || {};
@@ -534,11 +534,9 @@
     send.setAttribute('aria-label', busy ? 'Stop answering' : 'Send message');
     const close = $('closeout');
     close.hidden = !busy;
-    const until = c && ui.closing[c.id];
-    if (busy && until) {
-      const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+    if (busy && c && ui.closing[c.id]) {
       close.disabled = true;
-      close.replaceChildren(h('span', { class: 'co-long' }, left ? 'Wrapping up · ' : 'Wrapping up…'), left ? `${left}s` : '');
+      close.replaceChildren(h('span', { class: 'co-long' }, 'Writing final answer'), '…');
     } else {
       close.disabled = false;
       close.textContent = 'Close out';
@@ -580,12 +578,8 @@
     const c = active();
     if (!c || !(ui.streams[c.id] || c.busy) || ui.closing[c.id]) return;
     try {
-      const r = await api('POST', `/api/chats/${c.id}/closeout`);
-      ui.closing[c.id] = Date.now() + (r.seconds || 10) * 1000;
-      const tick = setInterval(() => {
-        if (!ui.closing[c.id]) { clearInterval(tick); return; }
-        renderComposer();
-      }, 250);
+      await api('POST', `/api/chats/${c.id}/closeout`);
+      ui.closing[c.id] = true;
       renderComposer();
     } catch (e) { banner(e.message); }
   }

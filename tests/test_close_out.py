@@ -12,8 +12,9 @@ from tests.test_engine import call, engine
 class ThinkingLLM:
     """Streams thoughts until should_stop; the wrap-up request (no tools) answers."""
 
-    def __init__(self, first=None, wrap_text="Final: 42.", wrap_slow=False, first_tools=None):
+    def __init__(self, first=None, wrap_text="Final: 42.", wrap_slow=False, first_tools=None, wrap_thinks=False):
         self.first, self.wrap_text, self.wrap_slow, self.first_tools = first, wrap_text, wrap_slow, first_tools
+        self.wrap_thinks = wrap_thinks           # a template that ignores enable_thinking: false
         self.seen = []
 
     def chat(self, messages, tools=None, tool_choice="auto", max_tokens=None, on_text=None, should_stop=None, extra=None):
@@ -21,6 +22,11 @@ class ThinkingLLM:
                           "max_tokens": max_tokens})
         if tools is None and "Give your final answer" in (messages[-1].get("content") or ""):
             out = ""
+            if self.wrap_thinks:
+                for _ in range(5000):
+                    if should_stop and should_stop():
+                        return Reply(reasoning="…", finish_reason="stopped")
+                    on_text and on_text("Let me plan how to phrase the answer. ", True)
             for word in self.wrap_text.split(" "):
                 if should_stop and should_stop():
                     return Reply(content=out, finish_reason="stopped")
@@ -65,17 +71,26 @@ class CloseOut(unittest.TestCase):
         self.assertEqual([m["role"] for m in r.messages], ["user", "assistant"])
         self.assertEqual(r.messages[-1]["content"].strip(), "Final: 42.")
 
-    def test_close_out_button_gives_ten_seconds(self):
-        llm = ThinkingLLM(wrap_text=" ".join(["word"] * 200), wrap_slow=True)
+    def test_close_out_button_lets_the_answer_finish(self):
+        llm = ThinkingLLM(wrap_text=" ".join(["word"] * 30), wrap_slow=True)     # ~3 s of answer
         eng, _ = engine(llm)
-        eng_close = threading.Timer(0.2, lambda: eng.close_out(seconds=0.5))
-        eng_close.start()
-        t0 = time.monotonic()
+        threading.Timer(0.2, eng.close_out).start()
         r = eng.run_turn([], "hard question", opts=opts())
         self.assertEqual(r.closed, "user")
-        self.assertTrue(r.truncated)                  # the deadline ended it
-        self.assertLess(time.monotonic() - t0, 2.0)
-        self.assertTrue(r.answer.startswith("word"))
+        self.assertFalse(r.truncated)                 # no time limit: the whole answer arrived
+        self.assertEqual(r.answer.split(), ["word"] * 30)
+        wrap = llm.seen[-1]
+        self.assertEqual(wrap["max_tokens"], 4096)    # the full Length budget
+        self.assertFalse(wrap["extra"]["chat_template_kwargs"]["enable_thinking"])
+        self.assertIn("Don't plan", wrap["messages"][-1]["content"])
+
+    def test_wrap_up_that_starts_thinking_again_is_cut_off(self):
+        llm = ThinkingLLM(wrap_thinks=True)
+        eng, _ = engine(llm)
+        threading.Timer(0.1, eng.close_out).start()
+        r = eng.run_turn([], "q", opts=opts())
+        self.assertEqual(r.closed, "user")
+        self.assertIn("thinking again", r.error)
 
     def test_out_of_room_while_thinking(self):
         llm = ThinkingLLM(first=Reply(reasoning="long thoughts", finish_reason="length"))
@@ -98,7 +113,7 @@ class CloseOut(unittest.TestCase):
 
         def handle(*a, **k):
             out = orig(*a, **k)
-            eng.close_out(seconds=5)
+            eng.close_out()
             return out
         eng._handle = handle
         r = eng.run_turn([], "q", opts=opts())

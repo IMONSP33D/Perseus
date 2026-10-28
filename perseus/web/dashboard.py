@@ -341,12 +341,11 @@ class Dashboard:
     def stop(self, cid: str) -> None:
         self.get(cid).engine.stop()
 
-    def close_out(self, cid: str, seconds: float = 10.0) -> float:
+    def close_out(self, cid: str) -> None:
         chat = self.get(cid)
         if not chat.busy:
             raise BadRequest("nothing to close out: this chat isn't answering")
-        chat.engine.close_out(seconds)
-        return seconds
+        chat.engine.close_out()
 
     # ------------------------------------------------------------------ raw view, export
     def raw(self, cid: str, mid: str) -> dict:

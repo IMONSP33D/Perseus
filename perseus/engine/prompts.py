@@ -39,8 +39,9 @@ WRAP_UP = {
     "budget": "You've used the thinking budget for this answer. Stop thinking.",
     "length": "You ran out of room while thinking. Stop thinking.",
 }
-CLOSE_OUT = ("{why} Give your final answer to the user's last message now, briefly, based only on what you have "
-             "worked out so far. If something is still uncertain, say so in one line.\n\n"
+CLOSE_OUT = ("{why} Give your final answer to the user's last message now, based only on what you have worked out "
+             "so far. Don't plan or think it through again: start writing the answer itself straight away, and "
+             "make it complete. If something is still uncertain, say so in one line.\n\n"
              "Your working notes so far (the user hasn't seen these):\n<notes>\n{notes}\n</notes>")
 CLOSE_OUT_CONTINUE = ("\n\nYou had already started the answer the user can see, ending:\n<answer_so_far>\n{partial}\n"
                       "</answer_so_far>\nContinue it from exactly where it stops. Don't repeat it.")

@@ -33,8 +33,7 @@ CHARS_PER_TOKEN = 3.5
 NETWORK_CODES = {"dns"}
 DEFAULT_RESULT_TOKENS = 8000
 COMPACT_EXCERPT_CHARS = 500
-CLOSE_OUT_SECONDS = 10.0
-CLOSE_OUT_TOKENS = 1024        # what 10 s can stream; the deadline ends it either way
+WRAP_UP_THINK_TOKENS = 512     # thinking is off for the wrap-up; a template that ignores that gets this much
 NOTES_CHARS = 24_000           # the tail of the thinking passed to the wrap-up request
 
 INJECTION_PATTERNS = [re.compile(p, re.I) for p in (
@@ -62,7 +61,7 @@ class TurnResult:
     usage: dict = field(default_factory=dict)    # last model reply: prompt_tokens, completion_tokens
     first_token_s: float | None = None
     closed: str | None = None            # wrapped up early: "user" (Close out), "budget" (thinking), "length"
-    truncated: bool = False              # the answer itself hit max_tokens (or the close-out deadline)
+    truncated: bool = False              # the answer itself hit max_tokens
 
 
 @dataclass
@@ -100,7 +99,6 @@ class Engine:
     tool_override: Callable[[str, dict], Any] | None = None   # replay: recorded results instead of running tools
     _stop: threading.Event = field(default_factory=threading.Event)
     _close: threading.Event = field(default_factory=threading.Event)
-    close_seconds: float = CLOSE_OUT_SECONDS
     _turn: int = 0
     _opts: TurnOptions = field(default_factory=TurnOptions)
 
@@ -109,9 +107,12 @@ class Engine:
         """The Stop button: ends the turn after the current step; the partial answer is kept."""
         self._stop.set()
 
-    def close_out(self, seconds: float = CLOSE_OUT_SECONDS) -> None:
-        """The Close out button: stop thinking and tools now, then `seconds` to give a final answer."""
-        self.close_seconds = seconds
+    def close_out(self) -> None:
+        """The Close out button: stop thinking and tools now, then write the final answer.
+
+        The answer gets the full Length budget and no time limit (Stop still ends it);
+        the wrap-up runs with thinking off, so the model writes instead of planning again.
+        """
         self._close.set()
 
     def system_message(self, opts: TurnOptions | None = None) -> dict:
@@ -188,13 +189,26 @@ class Engine:
             if "chat_template_kwargs" in ex:          # a thinking model: answer straight away
                 ex["chat_template_kwargs"] = {**ex["chat_template_kwargs"], "enable_thinking": False}
             ex.pop("reasoning_effort", None)
-            deadline = time.monotonic() + self.close_seconds if why == "user" else None
-            budget = CLOSE_OUT_TOKENS if why == "user" else (o.answer_tokens or max_tokens)
+            budget = o.answer_tokens or max_tokens
+            wrap_thought = 0
+            wrote = False
+
+            def wrap_piece(text: str, thought: bool):
+                nonlocal wrap_thought, wrote
+                if thought:
+                    wrap_thought += len(text)
+                else:
+                    wrote = True
+                if on_text:
+                    on_text(text, thought)
+
+            def thinking_again() -> bool:
+                return not wrote and wrap_thought / CHARS_PER_TOKEN > WRAP_UP_THINK_TOKENS
 
             def done_yet() -> bool:
-                return self._stop.is_set() or (deadline is not None and time.monotonic() > deadline)
+                return self._stop.is_set() or thinking_again()
             try:
-                reply = self.llm.chat(msgs, tools=None, max_tokens=budget, on_text=on_text, should_stop=done_yet,
+                reply = self.llm.chat(msgs, tools=None, max_tokens=budget, on_text=wrap_piece, should_stop=done_yet,
                                       extra=ex or None)
             except Exception as e:
                 new.append({"role": "assistant", "content": partial or None})
@@ -204,7 +218,11 @@ class Engine:
                 self.recorder.llm(turn, step + 1, msgs, None, reply)
             answer = partial + reply.content if partial.strip() else reply.content
             new.append({"role": "assistant", "content": answer or None})
-            cut = reply.finish_reason in ("length", "stopped") and not self._stop.is_set()
+            if thinking_again() and not self._stop.is_set():
+                return result(answer, False, step + 1, "the model started thinking again instead of answering "
+                              "(its chat template may ignore enable_thinking); ask again, or set Thinking: Off",
+                              why)
+            cut = reply.finish_reason == "length"
             return result(answer, self._stop.is_set(), step + 1, None, why, cut)
 
         for step in range(1, max_steps + 1):

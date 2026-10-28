@@ -62,7 +62,7 @@ Then open the printed link. The token is exchanged for a session cookie, so late
 | Internet Access (toggle, header pill) | Off: web tools are neither offered to the model nor run, and the gateway's kill switch is on. |
 | Show Thinking | Shows or hides the Thinking Process panel (display only). Opened while the model thinks, the panel follows the newest text; scroll up to read and it holds still, with "Jump to latest" to follow again. |
 | Sandbox Mode | Disabled: local code execution comes with the VM sandbox in a later release. |
-| Thinking: Off / Low / Medium / High | Shown only for models whose chat template thinks. Off sends `enable_thinking: false`; for gpt-oss the level is also sent as `reasoning_effort`. Each level is a thinking budget on top of Length (Low 2k, Medium 8k, High 32k tokens): past it Perseus wraps up (as Close out does, without the 10 s limit) and the answer says "Thinking budget reached". |
+| Thinking: Off / Low / Medium / High | Shown only for models whose chat template thinks. Off sends `enable_thinking: false`; for gpt-oss the level is also sent as `reasoning_effort`. Each level is a thinking budget on top of Length (Low 2k, Medium 8k, High 32k tokens): past it Perseus wraps up (as Close out does) and the answer says "Thinking budget reached". |
 | Context ring | Tokens used by the last answer (prompt plus output, as vLLM reported) out of the current context. |
 | System prompt | Engineer, Planner, Researcher or your own text, placed before Perseus's safety rules (never instead of them). |
 | Memory 8K / 32K / 128K / Max | The context length. Options that don't fit this box's KV cache are disabled. Applying restarts vLLM. |
@@ -77,7 +77,7 @@ Then open the printed link. The token is exchanged for a session cookie, so late
 | View raw (under each answer) | The prompt after the chat template, token counts, and the model's raw output for every step. |
 | Attach | Text files up to 200 KB each (5 per message), added to the message as fenced blocks. |
 | Send / Stop | While an answer runs, the send button stops it; the partial answer is kept. |
-| Close out | While an answer runs: stop thinking and skip any remaining tool calls, then one last request with tools and thinking off and the notes so far, cut off after 10 s. The answer is marked "Closed out". An answer that runs out of tokens while thinking wraps up the same way; one cut off mid-answer says "Cut off at the length limit". |
+| Close out | While an answer runs: stop thinking and skip any remaining tool calls, then one last request with tools and thinking off and the notes so far. The answer gets the full Length budget and no time limit (Stop still ends it); if a model's template ignores the thinking switch, Perseus cuts the new thinking off after 512 tokens and says so. The answer is marked "Closed out". An answer that runs out of tokens while thinking wraps up the same way; one cut off mid-answer says "Cut off at the length limit". |
 
 Chats live in memory on the box and vanish at teardown; "Export all chats" downloads everything as JSON. The theme, Show Thinking and the feed panel are remembered per browser.
 

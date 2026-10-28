@@ -197,7 +197,7 @@ class ServerTests(unittest.TestCase):
         t.start()
         time.sleep(0.3)
         st, body = self.c.req("POST", f"/api/chats/{chat['id']}/closeout", {})
-        self.assertEqual((st, body["seconds"]), (200, 10.0))
+        self.assertEqual((st, body), (200, {"closing": True}))
         t.join(5)
         events = out["r"][1]
         self.assertIn("closing", [e.get("phase") for e in events if e["type"] == "phase"])
