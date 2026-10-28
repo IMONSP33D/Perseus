@@ -230,8 +230,11 @@ def last_run(path: Path, max_lines: int = 3000) -> str:
     return "".join(lines)
 
 
-# The last line of a Python traceback, optionally behind vLLM's "(EngineCore_DP0 pid=…)" prefix.
-_EXC = re.compile(r"^(?:\([^)]*\)\s*)?((?:[A-Za-z_][\w.]*\.)?[A-Z]\w*(?:Error|Exception|Exit|Interrupt)\b(?::.*)?)$")
+# The last line of a Python traceback, behind vLLM's optional prefixes:
+#   (EngineCore pid=4127) ERROR 10-28 14:55:07 [core.py:1510] ValueError: …
+_EXC = re.compile(r"^(?:\([^)]*\)\s*)?"
+                  r"(?:(?:ERROR|WARNING|INFO|CRITICAL)\s+\d\d-\d\d\s+[\d:.]+\s+\[[^\]]*\]\s*)?"
+                  r"((?:[A-Za-z_][\w.]*\.)?[A-Z]\w*(?:Error|Exception|Exit|Interrupt)\b(?::.*)?)$")
 _WRAPPERS = ("Engine core initialization failed", "EngineCore failed to start", "Worker failed",
              "WorkerProc initialization failed")
 

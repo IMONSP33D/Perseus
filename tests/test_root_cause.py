@@ -32,6 +32,13 @@ class RootCause(unittest.TestCase):
         self.assertTrue(cause.startswith("ValueError: To serve at least one request"), cause)
         self.assertIn("EngineCore failed to start", cause_excerpt(run, cause))
 
+    def test_vllm_log_prefix(self):
+        log = ("(EngineCore pid=4127) ERROR 10-28 14:55:07 [core.py:1510] EngineCore failed to start.\n"
+               "(EngineCore pid=4127) ERROR 10-28 14:55:07 [core.py:1510]     worker_sample_tokens(grammar_output)\n"
+               "(EngineCore pid=4127) ERROR 10-28 14:55:07 [core.py:1510] AssertionError: grammar bitmask\n"
+               "RuntimeError: Engine core initialization failed. See root cause above.\n")
+        self.assertEqual(root_cause(log), "AssertionError: grammar bitmask")
+
     def test_wrapper_only_falls_back_to_it(self):
         self.assertEqual(root_cause("RuntimeError: Engine core initialization failed. See root cause above."),
                          "RuntimeError: Engine core initialization failed. See root cause above.")
