@@ -76,6 +76,7 @@ Then open the printed link. The token is exchanged for a session cookie, so late
 | Clear (tool feed) | Hides the calls listed so far from the feed, in this browser only; "Show them" brings them back. The chat, the model's history and "Export all chats" keep every call. |
 | View raw (under each answer) | The prompt after the chat template, token counts, and the model's raw output for every step. |
 | Attach | Text files up to 200 KB each (5 per message), added to the message as fenced blocks. |
+| Copy (code blocks) | Every fenced code block in an answer has a Copy button in its top-right corner; it copies the code exactly, without the fences, and shows "Copied". |
 | Send / Stop | While an answer runs, the send button stops it; the partial answer is kept. |
 | Close out | While an answer runs: stop thinking and skip any remaining tool calls, then one last request with tools and thinking off and the notes so far. The answer gets the full Length budget and no time limit (Stop still ends it); if a model's template ignores the thinking switch, Perseus cuts the new thinking off after 512 tokens and says so. The answer is marked "Closed out". An answer that runs out of tokens while thinking wraps up the same way; one cut off mid-answer says "Cut off at the length limit". |
 

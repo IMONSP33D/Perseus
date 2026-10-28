@@ -94,6 +94,35 @@
   }
   const link = (label, href) => h('a', { href, target: '_blank', rel: 'noopener noreferrer nofollow' }, label);
 
+  // A fenced code block with a Copy button in its top-right corner.
+  function codeBlock(text, lang) {
+    const label = h('span', { class: 'copy-label', text: 'Copy' });
+    const btn = h('button', { type: 'button', class: 'code-copy', 'aria-label': 'Copy code' }, icon('copy'), label);
+    btn.addEventListener('click', async () => {
+      const ok = await copyText(text);
+      btn.replaceChildren(icon(ok ? 'check' : 'x'), h('span', { class: 'copy-label', text: ok ? 'Copied' : 'Copy failed' }));
+      btn.classList.toggle('done', ok);
+      clearTimeout(btn._t);
+      btn._t = setTimeout(() => { btn.replaceChildren(icon('copy'), h('span', { class: 'copy-label', text: 'Copy' })); btn.classList.remove('done'); }, 1600);
+    });
+    return h('div', { class: 'code-wrap' },
+      h('pre', { class: 'code', 'aria-label': lang ? lang + ' code' : 'code' }, text), btn);
+  }
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+    } catch (e) { /* fall through to the older way */ }
+    const ta = h('textarea', { 'aria-hidden': 'true', readonly: true });
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+
   function markdown(src, streaming) {
     const blocks = [];
     const lines = (src || '').replace(/\r/g, '').split('\n');
@@ -107,7 +136,7 @@
         const body = [];
         i++;
         while (i < lines.length && !lines[i].trim().startsWith(fence[1])) body.push(lines[i++]);
-        blocks.push(h('pre', { class: 'code', 'aria-label': fence[2] ? fence[2] + ' code' : 'code' }, body.join('\n')));
+        blocks.push(codeBlock(body.join('\n'), fence[2]));
         continue;
       }
       if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}/.test(lines[i + 1])) {

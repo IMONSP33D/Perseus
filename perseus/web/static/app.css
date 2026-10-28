@@ -230,6 +230,17 @@ textarea::placeholder { color: var(--placeholder); }
   color: var(--code-fg); overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
   font-size: 13px; line-height: 1.55; white-space: pre;
 }
+.code-wrap { position: relative; margin-top: 4px; }
+.code-wrap .code { margin: 0; padding-top: 44px; }
+.code-copy {
+  position: absolute; top: 8px; right: 8px; display: inline-flex; align-items: center; gap: 6px; height: 28px;
+  padding: 0 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.08);
+  color: var(--code-fg); font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.code-copy:hover { background: rgba(255,255,255,.16); }
+.code-copy:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.code-copy.done { border-color: var(--live); }
+.code-copy svg { flex: none; }
 .md-table { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
 .md-table table { border-collapse: collapse; width: 100%; font-size: 14px; }
 .md-table th, .md-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--divider); vertical-align: top; }
