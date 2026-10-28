@@ -25,7 +25,7 @@ bash preflight.sh && python perseus.py
 ## What `perseus.py` does, in order
 
 1. **Walls first.** Installs the socket guard, builds the gateway and runs the boot self-test: 21 refusal checks in about a second. Any failure stops Perseus before GPU time is spent (fails closed).
-2. **Weights.** Waits for the download that preflight started, showing progress.
+2. **Weights.** Waits for the download that preflight started, showing the same live panel as preflight: overall and per-file bars, current speed with a one-minute graph, ETA and free disk. In preflight, Ctrl-C pauses the download and the next run resumes it.
 3. **Processes.** Starts SearXNG and vLLM under the supervisor. vLLM runs on 127.0.0.1, offline, with a per-boot key and no HF token.
 4. **Proof.** Times the first token, then sends one test tool call. It must come back parsed, or Perseus stops and names the parser.
 5. **Dashboard.** Prints a link with a one-time access token (see below). Ctrl-C, or `kill`, stops vLLM and SearXNG too.
@@ -168,7 +168,7 @@ perseus/                     # project root (the git repo)
 │   ├── sizing.py            # TP, dtype, context, small-GPU profile
 │   ├── hardware.py          # GPUs, driver, NVLink/PCIe, RAM, disks
 │   ├── hub.py               # Hub metadata, exact file list, remote-code and template checks
-│   ├── download.py          # Xet download, progress, verification, token scrub
+│   ├── download.py          # Xet download, live panel, pause/resume, verification, token scrub
 │   ├── install_searxng.sh
 │   ├── install_driver.sh    # opt-in, VM only
 │   ├── searxng.settings.yml # template, filled in per box
@@ -190,6 +190,7 @@ perseus/                     # project root (the git repo)
 │   ├── search.py            # SearXNG client (one fixed loopback address)
 │   ├── supervisor.py
 │   ├── console.py           # terminal front end (--console)
+│   ├── progress.py          # the live download panel (preflight and perseus.py)
 │   ├── timing.py            # boot timings
 │   └── web/                 # HTTP routes, SSE, dashboard state; static/ holds the page
 └── tests/                   # python3 -m unittest discover -s tests -t .
