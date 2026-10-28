@@ -138,6 +138,7 @@ def inspect(client: HubClient, repo: str, revision: str, trust_remote_code: bool
         native_dtype=_native_dtype(config, rf, quant),
         quant_method=quant,
         num_layers=int(text["num_hidden_layers"]),
+        attention_layers=_attention_layers(text),
         num_attention_heads=int(text["num_attention_heads"]),
         num_kv_heads=int(text.get("num_key_value_heads") or text["num_attention_heads"]),
         head_dim=int(text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"]),
@@ -173,7 +174,8 @@ def _weight_files(client: HubClient, repo: str, rf: RepoFiles) -> list[str]:
         return root
     other = [n for n in rf.sizes if n.endswith((".bin", ".pth", ".gguf"))]
     raise HubError(f"{repo} has no safetensors weights" + (f" (only {other[0].rsplit('.', 1)[1]} files)" if other else ""),
-                   "vLLM loads safetensors fastest and safest; pick a repo that ships them")
+                   "GGUF files are for llama.cpp; vLLM needs the safetensors release of the model: often the "
+                   "same name without -GGUF, or the FP8/base model the GGUF card says it was converted from")
 
 
 def _chat_template(client: HubClient, repo: str, sha: str, names: set[str]) -> str:
@@ -188,6 +190,17 @@ def _chat_template(client: HubClient, repo: str, sha: str, names: set[str]) -> s
             tpl = next((t.get("template", "") for t in tpl if t.get("name") in ("tool_use", "default")), "")
         return tpl or ""
     return ""
+
+
+def _attention_layers(text: dict) -> int | None:
+    """Full-attention layer count for hybrid models (Qwen3-Next / Qwen3.5 style); None for ordinary ones."""
+    types = text.get("layer_types")
+    if isinstance(types, list) and types and any("linear" in str(t) for t in types):
+        return sum(1 for t in types if str(t) in ("full_attention", "attention"))
+    interval = text.get("full_attention_interval")
+    if isinstance(interval, int) and interval > 1:
+        return int(text["num_hidden_layers"]) // interval
+    return None
 
 
 def _quant_method(config: dict) -> str | None:

@@ -98,6 +98,22 @@ class Inspect(unittest.TestCase):
         self.assertTrue(any("never mentions tools" in w for w in insp.warnings))
 
 
+class Hybrid(unittest.TestCase):
+    def test_hybrid_attention_layers_from_config(self):
+        types = (["linear_attention"] * 3 + ["full_attention"]) * 16      # 48 linear + 16 full = 64
+        cfg = {**QWEN_CONFIG, "model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"],
+               "layer_types": types}
+        insp = inspect(qwen_repo(texts={"config.json": cfg}), "orcarouter/Qwen3.8-27B-Uncensored-FP8", "main", False)
+        self.assertEqual((insp.meta.num_layers, insp.meta.attention_layers), (64, 16))
+        cfg2 = {**QWEN_CONFIG, "full_attention_interval": 4}
+        self.assertEqual(inspect(qwen_repo(texts={"config.json": cfg2}), "x/y", "main", False).meta.attention_layers, 16)
+        self.assertIsNone(inspect(qwen_repo(), "x/y", "main", False).meta.attention_layers)
+        self.assertEqual(pick(insp.meta), ("qwen3_coder", "qwen3"))
+        from setup.sizing import kv_bytes_per_token
+        plain = inspect(qwen_repo(), "x/y", "main", False).meta
+        self.assertEqual(kv_bytes_per_token(insp.meta, 1, 1) * 4, kv_bytes_per_token(plain, 1, 1))
+
+
 class Parsers(unittest.TestCase):
     def test_families(self):
         self.assertEqual(pick(qwen3_235b()), ("hermes", "qwen3"))

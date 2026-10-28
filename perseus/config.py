@@ -63,6 +63,9 @@ class Key:
 def _repo_id(v: str) -> str | None:
     if v in ("", "org/model-name"):
         return "set this to a Hugging Face repo id, e.g. \"Qwen/Qwen3-32B\""
+    if v.startswith(("hf://", "https://", "http://")) or v.endswith((".gguf", ".safetensors")):
+        return (f"{v!r} is a file or URL; set the repo id only, e.g. \"org/name\" "
+                "(Perseus downloads the right files itself)")
     if not REPO_ID_RE.match(v):
         return f"{v!r} is not a repo id of the form \"org/name\""
     return None

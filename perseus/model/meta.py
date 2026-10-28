@@ -21,6 +21,7 @@ class ModelMeta:
     model_type: str = ""
     architectures: list[str] = field(default_factory=list)
     kv_lora_rank: int | None = None      # MLA (DeepSeek-style) latent KV
+    attention_layers: int | None = None  # hybrid models: layers with a KV cache (linear-attention layers have none)
     qk_rope_head_dim: int | None = None
     thinks: bool = False                 # chat template emits <think> blocks
     chat_template_tools: bool = True

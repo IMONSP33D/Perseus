@@ -23,6 +23,8 @@ class Rule:
 # First match wins: put specific families above general ones.
 RULES: tuple[Rule, ...] = (
     Rule(("qwen3_coder", "qwen3-coder"), "qwen3_coder"),
+    # Qwen3.5 / 3.6 / 3.8 (model_type qwen3_5, qwen3_next): XML tool calls, the coder parser reads them
+    Rule(("qwen3_5", "qwen3_next", "qwen3.5", "qwen3.6", "qwen3.8"), "qwen3_coder", "qwen3"),
     Rule(("qwen3",), "hermes", "qwen3"),
     Rule(("qwq",), "hermes", "deepseek_r1"),
     Rule(("qwen2",), "hermes"),

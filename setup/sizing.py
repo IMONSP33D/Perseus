@@ -72,12 +72,15 @@ def kv_bytes_per_token(meta: ModelMeta, tp: int, bytes_per_value: float) -> floa
     Standard attention: 2 (K and V) x layers x KV heads x head size x bytes.
     With TP > KV heads, vLLM replicates heads so each rank holds at least one.
     MLA caches one latent per layer, replicated on every rank.
+    Hybrid models (Gated DeltaNet / linear attention mixed with full attention)
+    keep a KV cache only on their full-attention layers.
     """
+    layers = meta.attention_layers or meta.num_layers
     if meta.is_mla:
-        per_rank = meta.num_layers * (meta.kv_lora_rank + (meta.qk_rope_head_dim or 0)) * bytes_per_value
+        per_rank = layers * (meta.kv_lora_rank + (meta.qk_rope_head_dim or 0)) * bytes_per_value
         return per_rank * tp
     heads = max(meta.num_kv_heads, tp)
-    return 2 * meta.num_layers * heads * meta.head_dim * bytes_per_value
+    return 2 * layers * heads * meta.head_dim * bytes_per_value
 
 
 def tp_candidates(meta: ModelMeta, n_gpus: int, forced: int | str) -> list[int]:
