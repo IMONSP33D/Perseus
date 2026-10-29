@@ -1,9 +1,9 @@
 """E2B: each session is a fresh Firecracker microVM in E2B's cloud.
 
-Settings ([code_runner] in perseus.toml):
-  key_file      file holding the E2B API key (read here, in the broker, never by Perseus);
+Settings:
+  api_key       [secrets] code_runner_api_key from perseus.toml, read by the broker (never by Perseus);
                 if empty, the broker's E2B_API_KEY environment variable
-  e2b_template  template ID or alias with the toolchains installed (setup/sandbox/);
+  e2b_template  [code_runner] e2b_template: template name with the toolchains installed (setup/sandbox/);
                 empty = E2B's default template (Python, Node.js, Bash only)
 
 Written against the e2b Python SDK 2.x (pinned in pyproject.toml).
@@ -14,7 +14,6 @@ from __future__ import annotations
 import os
 import shlex
 import time
-from pathlib import Path
 
 from perseus.sandbox.backends import Capabilities, ExecResult, SandboxError, SessionSpec
 
@@ -23,19 +22,9 @@ KILL_GRACE_S = 2
 
 
 def read_key(settings: dict, environ=os.environ) -> str:
-    path = (settings.get("key_file") or "").strip()
-    if path:
-        p = Path(path).expanduser()
-        try:
-            key = p.read_text().strip()
-        except OSError as e:
-            raise SandboxError("config", f"can't read the E2B key file {p} ({type(e).__name__})")
-        if not key:
-            raise SandboxError("config", f"the E2B key file {p} is empty")
-        return key
-    key = (environ.get("E2B_API_KEY") or "").strip()
+    key = (settings.get("api_key") or environ.get("E2B_API_KEY") or "").strip()
     if not key:
-        raise SandboxError("config", "no E2B API key: set [code_runner] key_file, or E2B_API_KEY")
+        raise SandboxError("config", "no code runner API key: set [secrets] code_runner_api_key in perseus.toml")
     return key
 
 

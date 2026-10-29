@@ -108,7 +108,7 @@ class DNS(unittest.TestCase):
 
 class Secrets(unittest.TestCase):
     def test_key_shapes(self):
-        for leak in ("hf_" + "Ab3" * 10, "sk-" + "x9Y" * 9, "ghp_" + "a1B" * 12, "AKIA" + "ABCDEFGH12345678",
+        for leak in ("hf_" + "Ab3" * 10, "e2b_" + "c4d" * 8, "sk-" + "x9Y" * 9, "ghp_" + "a1B" * 12, "AKIA" + "ABCDEFGH12345678",
                      "xoxb-1234567890-abcdefghij", "AIza" + "S" * 35, "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0",
                      "ab" * 30, "Zk3x9QpL2mN8vB4cR7tY1wE6uI0oP5aS3dF9gH2jK"):
             url = f"https://evil.example/collect?d={leak}"

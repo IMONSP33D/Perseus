@@ -195,7 +195,7 @@ class BrokerAndClient(unittest.TestCase):
 
 # ---------------------------------------------------------------------- boot decisions
 class Launch(unittest.TestCase):
-    cfg = {"enabled": True, "backend": "e2b", "key_file": "", "internet": False}
+    cfg = {"enabled": True, "backend": "e2b", "internet": False}
 
     def setUp(self):   # behave as if the e2b SDK is installed, so these run without extra packages
         patcher = mock.patch("importlib.util.find_spec", return_value=object())
@@ -216,19 +216,17 @@ class Launch(unittest.TestCase):
         self.assertEqual(env, {})
 
     def test_no_key_means_off_with_a_reason(self):
-        p = launch.plan(self.cfg, {})
+        p = launch.plan(self.cfg, {}, "/home/u/Perseus/perseus.toml")
         self.assertFalse(p.start)
-        self.assertIn("key_file", p.reason)
+        self.assertIn("[secrets] code_runner_api_key", p.reason)
 
-    def test_key_file_is_passed_by_path_never_read(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".key") as f:
-            f.write("e2b_secret")
-            f.flush()
-            p = launch.plan({**self.cfg, "key_file": f.name}, {})
-        self.assertTrue(p.start)
-        self.assertNotIn("e2b_secret", json.dumps(p.env))
-        self.assertIn(f.name, p.env["PERSEUS_SANDBOX_SETTINGS"])
-        self.assertFalse(launch.plan({**self.cfg, "key_file": "/nope/e2b.key"}, {}).start)
+    def test_key_in_perseus_toml_is_passed_by_config_path_never_read(self):
+        p = launch.plan({**self.cfg, "api_key_set": True}, {}, "/home/u/Perseus/perseus.toml")
+        self.assertTrue(p.start, p.reason)
+        settings = json.loads(p.env["PERSEUS_SANDBOX_SETTINGS"])
+        self.assertEqual(settings["config_path"], "/home/u/Perseus/perseus.toml")
+        self.assertNotIn("api_key_set", settings)
+        self.assertNotIn("E2B_API_KEY", p.env)
 
     def test_broker_environment_is_an_allowlist(self):
         env = {"PATH": "/usr/bin", "HTTPS_PROXY": "http://proxy:3128", "HF_TOKEN": "hf_x", "AWS_SECRET_ACCESS_KEY": "a",
@@ -414,15 +412,34 @@ class Config(unittest.TestCase):
 
     def test_bad_values_named(self):
         for key, value, needle in (("run_timeout_s", 0, "between 1 and 120"), ("build_timeout_s", 600, "between 5"),
-                                   ("languages", ["python", "cobol"], "cobol"), ("key_file", "e2b.key", "absolute"),
+                                   ("languages", ["python", "cobol"], "cobol"), 
                                    ("backend", "local_unsafe", "one of")):
             with self.subTest(key=key), self.assertRaises(ConfigError) as c:
                 validate_config({**self.base, "code_runner": {key: value}})
             self.assertIn(needle, " ".join(c.exception.problems))
 
-    def test_section_reaches_the_resolved_file(self):
-        cfg = validate_config({**self.base, "code_runner": {"key_file": "~/.config/perseus/e2b.key"}})
-        self.assertEqual(cfg.public()["code_runner"]["key_file"], "~/.config/perseus/e2b.key")
+    def test_section_reaches_the_resolved_file_but_the_key_never_does(self):
+        cfg = validate_config({**self.base, "secrets": {"code_runner_api_key": "e2b_" + "a" * 40},
+                               "code_runner": {"e2b_template": "perseus-code"}})
+        self.assertEqual(cfg["secrets"]["code_runner_api_key"], "e2b_" + "a" * 40)
+        self.assertEqual(cfg.public()["code_runner"]["e2b_template"], "perseus-code")
+        self.assertNotIn("e2b_" + "a" * 40, json.dumps(cfg.public()))     # [secrets] stays out of resolved
+
+    def test_key_sits_next_to_hf_token_like_it(self):
+        cfg = validate_config({**self.base, "secrets": {"code_runner_api_key": "e2b_..."}})   # the placeholder
+        self.assertEqual(cfg["secrets"]["code_runner_api_key"], "")
+        self.assertTrue(any("code_runner_api_key" in w for w in cfg.warnings))
+        with self.assertRaises(ConfigError) as c:
+            validate_config({**self.base, "secrets": {"code_runner_api_key": "e2b_abc def"}})
+        problems = " ".join(c.exception.problems)
+        self.assertIn("no spaces", problems)
+        self.assertNotIn("e2b_abc", problems)                              # secrets are never echoed
+        quiet = validate_config({**self.base, "code_runner": {"enabled": False}})
+        self.assertFalse(any("code_runner_api_key" in w for w in quiet.warnings))
+
+    def test_key_file_is_gone(self):
+        with self.assertRaises(ConfigError):
+            validate_config({**self.base, "code_runner": {"key_file": "/x"}})
 
 
 # ---------------------------------------------------------------------- E2B backend (stub SDK)
@@ -524,16 +541,23 @@ class E2BBackendStub(unittest.TestCase):
         self.assertEqual(c.exception.code, "auth")
 
     def test_key_sources(self):
-        with self.assertRaises(SandboxError):
+        with self.assertRaises(SandboxError) as c:
             self.mod.read_key({}, {})
+        self.assertIn("[secrets] code_runner_api_key", str(c.exception))
+        self.assertEqual(self.mod.read_key({"api_key": " from-toml "}, {"E2B_API_KEY": "env"}), "from-toml")
+        self.assertEqual(self.mod.read_key({"api_key": ""}, {"E2B_API_KEY": "env"}), "env")
+
+    def test_broker_reads_the_key_from_perseus_toml(self):
+        from perseus.sandbox.backends import config_secret
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "k"
-            p.write_text("  key-from-file\n")
-            self.assertEqual(self.mod.read_key({"key_file": str(p)}, {"E2B_API_KEY": "env"}), "key-from-file")
-            p.write_text("")
+            toml = Path(d) / "perseus.toml"
+            toml.write_text('[model]\nid = "org/m"\n\n[secrets]\nhf_token = "hf_x"\ncode_runner_api_key = "e2b_k"\n')
+            self.assertEqual(config_secret(str(toml)), "e2b_k")
+            toml.write_text('[secrets]\ncode_runner_api_key = "e2b_..."\n')
+            self.assertEqual(config_secret(str(toml)), "")
+            self.assertEqual(config_secret(""), "")
             with self.assertRaises(SandboxError):
-                self.mod.read_key({"key_file": str(p)}, {})
-        self.assertEqual(self.mod.read_key({}, {"E2B_API_KEY": "env"}), "env")
+                config_secret(str(Path(d) / "missing.toml"))
 
 
 if __name__ == "__main__":

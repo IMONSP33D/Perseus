@@ -221,7 +221,7 @@ def main(argv: list[str] | None = None) -> None:
     run.pid("perseus", os.getpid())
     run.secret("vllm.key", key)
     # code runner: decided before anything inherits this process's environment (moves E2B_API_KEY out of it)
-    sandbox_plan = sandbox_launch.plan(r.get("code_runner", {}), os.environ)
+    sandbox_plan = sandbox_launch.plan(r.get("code_runner", {}), os.environ, r.get("data", {}).get("config", ""))
     sandbox_port, sandbox_token = free_port(), secrets.token_urlsafe(32)
     sandbox_secrets = (sandbox_token,) + tuple(v for k, v in sandbox_plan.env.items() if k == sandbox_launch.KEY_ENV)
 

@@ -10,7 +10,6 @@ import importlib.util
 import json
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from perseus.sandbox.backends import CONFIGURABLE
 
@@ -24,9 +23,12 @@ class Plan:
     env: dict = field(default_factory=dict)      # extra environment for the broker process only
 
 
-def plan(cfg: dict, environ) -> Plan:
+def plan(cfg: dict, environ, config_path: str = "") -> Plan:
     """Decide whether to start the broker. Always removes E2B_API_KEY from `environ` (this process's
-    environment), so tools, vLLM and SearXNG never inherit it; only the broker gets it back."""
+    environment), so tools, vLLM and SearXNG never inherit it; only the broker gets it back.
+
+    The key itself lives in perseus.toml ([secrets] code_runner_api_key). Perseus only learns from
+    preflight *whether* one is set (api_key_set); the broker reads the value from `config_path`."""
     env_key = (environ.pop(KEY_ENV, "") or "").strip()
     if not cfg:
         return Plan(False, "off (no [code_runner] section; run bash preflight.sh to refresh the config)")
@@ -36,18 +38,17 @@ def plan(cfg: dict, environ) -> Plan:
     if backend not in CONFIGURABLE:
         return Plan(False, f"off (unknown backend {backend!r})")
     settings = {**cfg, "backend": backend}
-    env = {"PERSEUS_SANDBOX_SETTINGS": json.dumps(settings)}
-    if backend == "e2b":
-        if importlib.util.find_spec("e2b") is None:
-            return Plan(False, "off (the e2b package isn't installed; run bash preflight.sh)")
-        key_file = (cfg.get("key_file") or "").strip()
-        if key_file:
-            if not Path(key_file).expanduser().is_file():
-                return Plan(False, f"off ([code_runner] key_file {key_file} not found)")
-        elif env_key:
-            env[KEY_ENV] = env_key
-        else:
-            return Plan(False, "off (no E2B key: set [code_runner] key_file, see README › Code runner)")
+    settings.pop("api_key_set", None)
+    env = {}
+    if backend == "e2b" and importlib.util.find_spec("e2b") is None:
+        return Plan(False, "off (the e2b package isn't installed; run bash preflight.sh)")
+    if cfg.get("api_key_set") and config_path:
+        settings["config_path"] = config_path
+    elif env_key:
+        env[KEY_ENV] = env_key
+    else:
+        return Plan(False, "off (no [secrets] code_runner_api_key in perseus.toml; add it, then run bash preflight.sh)")
+    env["PERSEUS_SANDBOX_SETTINGS"] = json.dumps(settings)
     return Plan(True, f"starting ({backend})", env)
 
 
