@@ -19,6 +19,10 @@ dependencies = [
 serve = [
   "vllm==0.32.0",   # pulls torch==2.13.0
 ]
+# The code runner's sandbox broker (a separate process; never imported by Perseus or its tools).
+sandbox = [
+  "e2b==2.62.0",
+]
 
 [tool.uv]
 package = false
