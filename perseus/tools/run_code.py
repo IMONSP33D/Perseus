@@ -14,6 +14,15 @@ from perseus.tools import ToolFailure, tool
 
 STATUS = {"ok": "ran successfully", "compile_error": "did not compile", "build_timeout": "build timed out",
           "runtime_error": "ran but failed", "timeout": "timed out"}
+# the short label on the tool feed card
+OUTCOME = {"ok": "program ok", "compile_error": "didn't compile", "build_timeout": "build timed out",
+           "runtime_error": "program failed", "timeout": "program timed out"}
+
+
+def outcome(r: dict) -> str:
+    label = OUTCOME.get(r.get("status"), str(r.get("status")))
+    code = r.get("exit_code")
+    return f"{label} · exit {code}" if code not in (None, 0) else label
 
 
 def render(r: dict) -> str:
@@ -62,4 +71,4 @@ def run_code(ctx, language: str, code: str, stdin: str = ""):
     if offline and getattr(ctx.sandbox, "network", "none") != "none":
         text += "\n\n(Internet Access is off for this chat, so this ran with no network.)"
     return {"language": language, "status": r.get("status"), "exit_code": r.get("exit_code"),
-            "seconds": r.get("seconds"), "text": text}
+            "seconds": r.get("seconds"), "outcome": outcome(r), "text": text}

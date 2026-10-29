@@ -35,6 +35,7 @@ class ToolEvent:
     result: str | None = None       # the text returned to the model
     warning: str | None = None      # e.g. instruction-like phrases found in a page
     lookup: str | None = None       # "7 of 20"
+    outcome: str | None = None      # a tool's own one-word result, e.g. run_code's "program failed · exit 1"
 
     def to_dict(self) -> dict:
         return asdict(self)

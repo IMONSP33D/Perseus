@@ -418,6 +418,11 @@ class RunCodeTool(unittest.TestCase):
         self.assertIn("(no output)", out["text"])
         self.assertIn("middle was cut", out["text"])
 
+    def test_outcome_label(self):
+        self.assertEqual(self.mod.outcome({"status": "ok", "exit_code": 0}), "program ok")
+        self.assertEqual(self.mod.outcome({"status": "runtime_error", "exit_code": 127}), "program failed · exit 127")
+        self.assertEqual(self.mod.outcome({"status": "timeout", "exit_code": None}), "program timed out")
+
     def test_off_without_sandbox(self):
         with self.assertRaises(ToolFailure):
             self.mod.run_code(ToolContext(), "python", "x")
@@ -449,6 +454,19 @@ class EngineIntegration(unittest.TestCase):
         r = self.engine(llm, reaches_web=True).run_turn([], "q", opts=off)
         self.assertEqual((r.events[0].status, r.events[0].code), ("refused", "web_off"))
         self.assertNotIn("run_code", llm.seen[0]["tools"])
+
+    def test_feed_shows_the_program_outcome_not_as_an_http_status(self):
+        reg = Registry()
+
+        @tool(description="runs", registry=reg, requires="sandbox", untrusted=True,
+              parameters={"type": "object", "properties": {}})
+        def run_code(ctx):
+            return {"status": "runtime_error", "exit_code": 1, "outcome": "program failed · exit 1", "text": "x"}
+        reg.provide("sandbox")
+        r = Engine(ScriptedLLM([call("run_code", {})], "done"), reg, ToolContext(), Feed()).run_turn([], "q")
+        ev = r.events[0]
+        self.assertIsNone(ev.http_status)
+        self.assertEqual(ev.outcome, "program failed · exit 1")
 
     def test_untrusted_rule_in_the_system_prompt_even_with_internet_off(self):
         e = self.engine(ScriptedLLM("hi"))
