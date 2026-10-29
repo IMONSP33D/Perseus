@@ -28,6 +28,14 @@ class StreamingLLM:
                 if should_stop and should_stop():
                     return Reply(content="partial", finish_reason="stopped")
                 time.sleep(0.02)
+        if "narrate" in user and messages[-1]["role"] != "tool":
+            # many open models write their plan as plain answer text right before a tool call
+            narration = "The user wants a doubled number. Let me call calc."
+            if on_text:
+                on_text(narration, False)
+            return Reply(content=narration, tool_calls=[{"id": "c1", "type": "function",
+                                                         "function": {"name": "calc", "arguments": '{"x": 2}'}}],
+                         finish_reason="tool_calls")
         if "math" in user and messages[-1]["role"] != "tool":
             return Reply(tool_calls=[{"id": "c1", "type": "function",
                                       "function": {"name": "calc", "arguments": '{"x": 2}'}}],
@@ -103,6 +111,15 @@ class ServerTests(unittest.TestCase):
         self.srv.stop()
 
     # ---------------------------------------------------------------- pipelines and tools (WIP)
+    def test_text_written_before_a_tool_call_ends_up_as_thinking_not_answer(self):
+        chat = self.c.req("POST", "/api/chats", {})[1]
+        _, events = self.c.stream(chat["id"], "narrate then answer")
+        done = next(e for e in events if e["type"] == "done")["message"]
+        self.assertEqual(done["content"], "Hello **world**")
+        self.assertIn("Let me call calc.", done["reasoning"])
+        retract = [e for e in events if e["type"] == "retract"]
+        self.assertEqual([e["text"] for e in retract], ["The user wants a doubled number. Let me call calc."])
+
     def test_pipelines_and_tools(self):
         self.assertEqual(self.anon.req("GET", "/api/pipelines")[0], 401)
         self.assertEqual(self.anon.req("GET", "/api/tools")[0], 401)

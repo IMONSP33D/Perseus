@@ -278,6 +278,11 @@ class Engine:
             if not reply.tool_calls:
                 return result(reply.content, stopping, step,
                               truncated=reply.finish_reason == "length")
+            if reply.content.strip():
+                # Text written alongside tool calls is the model planning ("Let me search for…"), not the
+                # answer. It was streamed as answer text; move it to the thinking. The history keeps it.
+                reasoning += reply.content
+                piece(reply.content, RETRACT)
 
             for call in reply.tool_calls:
                 closing = self._close.is_set() and not stopping
@@ -465,8 +470,9 @@ def _tool_msg(call: dict, content: str) -> dict:
 
 
 def _last_text(msgs: list[dict]) -> str:
+    """The latest answer text. Text that came with tool calls was planning, not an answer."""
     for m in reversed(msgs):
-        if m.get("role") == "assistant" and m.get("content"):
+        if m.get("role") == "assistant" and m.get("content") and not m.get("tool_calls"):
             return m["content"]
     return ""
 

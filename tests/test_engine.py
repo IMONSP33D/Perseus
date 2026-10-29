@@ -255,3 +255,46 @@ class Helpers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NarratingLLM:
+    """Writes its plan as answer text next to a tool call (common in open models), then answers."""
+
+    def __init__(self, final="The answer is 4."):
+        self.final, self.calls = final, 0
+
+    def chat(self, messages, tools=None, tool_choice="auto", max_tokens=None, on_text=None, should_stop=None, extra=None):
+        self.calls += 1
+        if self.calls == 1:
+            plan = "The user wants 2+2. Let me check with spy."
+            if on_text:
+                on_text(plan, False)
+            return Reply(content=plan, tool_calls=[call("spy", {"n": 1}, "c1")], finish_reason="tool_calls")
+        if on_text:
+            on_text(self.final, False)
+        return Reply(content=self.final, finish_reason="stop")
+
+
+class PlanningTextIsThinking(unittest.TestCase):
+    def test_text_beside_a_tool_call_is_retracted_into_thinking(self):
+        seen = []
+        e, _ = engine(NarratingLLM())
+        r = e.run_turn([], "2+2?", on_text=lambda t, th: seen.append((t, th)))
+        self.assertEqual(r.answer, "The answer is 4.")
+        self.assertIn("Let me check with spy.", r.reasoning)
+        from perseus.model.thinksplit import RETRACT
+        self.assertIn(("The user wants 2+2. Let me check with spy.", RETRACT), seen)
+        self.assertEqual(r.messages[1]["content"], "The user wants 2+2. Let me check with spy.")  # history keeps it
+
+    def test_stopping_after_a_tool_step_doesnt_turn_the_plan_into_the_answer(self):
+        e, _ = engine(NarratingLLM())
+        orig = e._handle
+
+        def handle_then_stop(*a, **k):
+            out = orig(*a, **k)
+            e.stop()
+            return out
+        e._handle = handle_then_stop
+        r = e.run_turn([], "2+2?")
+        self.assertTrue(r.stopped)
+        self.assertEqual(r.answer, "")
