@@ -494,4 +494,8 @@ uvx pre-commit install
 
 ## License
 
-Proprietary. All rights reserved.
+Perseus is free software under the [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`). You may use, study, change and share it. If you distribute a modified version, or let other people use one over a network, you must make its complete source available to them under the same license.
+
+Copyright © 2026 IMONSP33D. As the copyright holder, the maintainer may also offer Perseus under other terms, including commercial licenses, and may release future versions under a different license. Versions already published under the AGPL remain available under it.
+
+**Contributing.** So that the project can keep offering other terms, contributions are accepted only under a Contributor License Agreement that lets the maintainer relicense them. Please open an issue before sending a pull request.

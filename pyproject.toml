@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Turn a rented Linux GPU box into a safe tool-calling dashboard for any open model."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"   # vLLM 0.32 supports 3.11-3.14
-license = { text = "Proprietary" }
+license = { text = "AGPL-3.0-only" }
 
 # Base set: installed first, in seconds, so the config, hardware and Hub
 # checks run before anything heavy. Exact pins; regenerate uv.lock after changes.
