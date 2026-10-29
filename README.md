@@ -5,15 +5,15 @@
   <img src="perseus/web/static/logo-header.svg" alt="Perseus" width="440">
 </picture>
 
-**A self-hosted agent harness for open-weight models.**<br>
+**An open-source, self-hosted agent harness for open-weight models.**<br>
 Turn a rented Linux GPU server into a private, sandboxed tool-calling assistant with web research, in two commands.
 
 ![Python 3.11–3.14](https://img.shields.io/badge/python-3.11%E2%80%933.14-2B2D42)
 ![vLLM 0.32](https://img.shields.io/badge/vLLM-0.32.0-2B2D42)
-![Tests](https://img.shields.io/badge/tests-191%20passing-16A34A)
-![License](https://img.shields.io/badge/license-proprietary-D90429)
+![Tests](https://img.shields.io/badge/tests-270%20passing-16A34A)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-2B2D42)](LICENSE)
 
-[Quick start](#quick-start) · [Configuration](#configuration) · [Dashboard](#the-dashboard) · [Pipelines](#development-pipelines-preview) · [Tools](#writing-tools) · [Security](#how-perseus-stays-safe) · [Project structure](#project-structure)
+[Quick start](#quick-start) · [Configuration](#configuration) · [Dashboard](#the-dashboard) · [Pipelines](#development-pipelines-preview) · [Tools](#writing-tools) · [Security](#how-perseus-stays-safe) · [Project structure](#project-structure) · [License](#license)
 
 </div>
 
@@ -422,6 +422,7 @@ Perseus keeps two trees apart: **the checkout** you cloned (code and config) and
 
 ```
 perseus/                         the checkout (this repo)
+├── LICENSE                      GNU AGPL-3.0
 ├── perseus.example.toml         config template documenting every key
 ├── perseus.toml                 your config (git-ignored)
 ├── preflight.sh                 step 1: prepare the box
