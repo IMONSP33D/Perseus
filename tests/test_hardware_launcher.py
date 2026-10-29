@@ -95,3 +95,40 @@ class Launcher(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MaxNumSeqs(unittest.TestCase):
+    LOG = ("(EngineCore pid=11668) ERROR 10-29 15:11:44 [core.py:1510] ValueError: max_num_seqs (1024) exceeds "
+           "available Mamba cache blocks (637). Each decode sequence requires one Mamba cache block, so CUDA graph "
+           "capture cannot proceed. Please lower max_num_seqs to at most 637 or increase gpu_memory_utilization.")
+
+    def test_limit_read_from_vllms_error(self):
+        from perseus.model.launch import seqs_limit
+        self.assertEqual(seqs_limit(self.LOG), 637)
+        self.assertEqual(seqs_limit("ValueError: max_num_seqs (64) exceeds available Mamba cache blocks (40)."), 40)
+        self.assertIsNone(seqs_limit("torch.OutOfMemoryError: CUDA out of memory"))
+
+    def test_remedy_only_when_it_changes_something(self):
+        from perseus.model.launch import remedy
+        r = {"vllm": {}}
+        self.assertEqual(remedy(self.LOG, ["vllm", "--max-num-seqs", "1024"], r)[0], ["vllm", "--max-num-seqs", "637"])
+        self.assertEqual(remedy(self.LOG, ["vllm"], {"vllm": {}})[0], ["vllm", "--max-num-seqs", "637"])
+        self.assertIsNone(remedy(self.LOG, ["vllm", "--max-num-seqs", "16"], {"vllm": {}}))
+        self.assertIsNone(remedy("ValueError: something else", ["vllm"], {"vllm": {}}))
+        self.assertIsNone(remedy("lower max_num_seqs to at most 0", ["vllm"], {"vllm": {}}))
+
+    def test_explained_in_plain_words(self):
+        from perseus.model.launch import explain_crash
+        hints = explain_crash(self.LOG, {"vllm": {"max_model_len": 262144}})
+        self.assertIn("637 parallel requests", hints[0])
+        hints = explain_crash("lower max_num_seqs to at most 0", {"vllm": {"max_model_len": 262144}})
+        self.assertIn("max_context lower", hints[1])
+
+
+class DefaultSeqs(unittest.TestCase):
+    def test_one_user_needs_few_parallel_requests(self):
+        cmd = build_vllm_cmd(RESOLVED, 41234)
+        self.assertEqual(cmd[cmd.index("--max-num-seqs") + 1], "16")
+        r = {**RESOLVED, "vllm": {**RESOLVED["vllm"], "max_num_seqs": 637}}   # a remedy recorded earlier
+        cmd = build_vllm_cmd(r, 41234)
+        self.assertEqual(cmd[cmd.index("--max-num-seqs") + 1], "637")

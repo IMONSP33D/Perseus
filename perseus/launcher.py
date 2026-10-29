@@ -35,6 +35,7 @@ from perseus.engine.tool_loader import default_loader
 from perseus.model.client import LLMClient
 from perseus.model.launch import (build_vllm_cmd, explain_crash, gpu_memory_used, precision_label, tool_call_check,
                                   vllm_env, vllm_healthy)
+from perseus.model.launch import remedy as vllm_remedy
 from perseus.safety import selftest, socketguard
 from perseus.safety.gateway import Gateway
 from perseus.sandbox import launch as sandbox_launch
@@ -311,7 +312,8 @@ def main(argv: list[str] | None = None) -> None:
                             ready_timeout_s=180, max_restarts=max_restarts))
     sup.add(ProcessSpec("vLLM", build_vllm_cmd(r, vllm_port, args.fast_start), vllm_env(key, paths.run),
                         logs / "vllm.log", lambda: vllm_healthy(vllm_port, key), cwd=paths.run,
-                        max_restarts=max_restarts, explain=lambda log: explain_crash(log, r)))
+                        max_restarts=max_restarts, explain=lambda log: explain_crash(log, r),
+                        remedy=lambda log, cmd: vllm_remedy(log, cmd, r)))
     try:
         if have_searxng:
             sup.start("SearXNG")
