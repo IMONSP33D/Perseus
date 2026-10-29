@@ -51,8 +51,9 @@ enabled = true               # on by default; stays off (and hidden from the mod
 backend = "e2b"              # e2b (more backends can plug in; see perseus/sandbox/backends/)
 e2b_template = ""            # E2B template with the toolchains (setup/sandbox/); "" = E2B default
                              # (Python, Node.js and Bash only; C, C++, Rust, Go and Java need the template)
-internet = false             # true lets sandboxed programs reach the internet (then the Internet
-                             # Access switch also turns run_code off)
+network = "packages"         # what sandboxed programs can reach: "none", "packages" (pip, npm,
+                             # cargo, go and maven registries only) or "full" (the internet). While a
+                             # chat's Internet Access is off, its programs run with no network.
 languages = []               # [] = every language the sandbox has; or a subset, e.g. ["python", "rust"]
 build_timeout_s = 120        # compile step limit (5-180)
 run_timeout_s = 30           # program run limit (1-120)

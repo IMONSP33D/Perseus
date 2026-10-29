@@ -88,7 +88,9 @@ class Runner(unittest.TestCase):
         self.assertEqual(cap("short", 600), ("short", False))
 
     def test_probe_reports_missing_toolchains_and_open_network(self):
-        b = FakeBackend().on("rustc --version", ExecResult(127)).on("python3 netprobe.py", ExecResult(0, "CONNECTED"))
+        open_net = 'PROBE {"https://example.com/": true, "https://1.1.1.1/": true, "https://pypi.org/simple/": true}'
+        b = FakeBackend().on("rustc --version", ExecResult(127)).on(
+            lambda c: c.startswith("python3 netprobe.py"), ExecResult(0, open_net))
         p = probe(b)
         self.assertIn("rust", p["missing"])
         self.assertNotIn("rust", p["languages"])
@@ -99,8 +101,39 @@ class Runner(unittest.TestCase):
         p = probe(FakeBackend(), RunSettings(languages=["python", "rust"]))
         self.assertEqual(p["languages"], ["python", "rust"])
 
-    def test_probe_skips_network_check_when_internet_is_on(self):
-        self.assertIsNone(probe(FakeBackend(), RunSettings(internet=True))["network_blocked"])
+    def test_probe_per_level(self):
+        none = probe(FakeBackend(), RunSettings(network="none"))
+        self.assertEqual((none["network_blocked"], none["packages_ok"], none["offline_ok"]), (True, None, True))
+        pk = probe(FakeBackend(), RunSettings(network="packages"))
+        self.assertEqual((pk["network_blocked"], pk["packages_ok"], pk["offline_ok"]), (True, True, True))
+        full = probe(FakeBackend(), RunSettings(network="full"))
+        self.assertEqual((full["network_blocked"], full["offline_ok"]), (None, True))
+
+    def test_probe_uses_real_https_requests(self):
+        b = FakeBackend()
+        probe(b, RunSettings(network="packages"))
+        cmds = [c for s in b.sessions for c, _ in s.commands if c.startswith("python3 netprobe.py")]
+        self.assertTrue(cmds and all("https://" in c for c in cmds))
+        self.assertIn("urlopen", b.sessions[0].files["netprobe.py"])        # not a bare TCP connect
+
+    def test_probe_fails_closed_when_it_cant_tell(self):
+        b = FakeBackend().on(lambda c: c.startswith("python3 netprobe.py"), ExecResult(1, "", "Traceback"))
+        p = probe(b, RunSettings(network="none"))
+        self.assertIs(p["network_blocked"], False)
+
+    def test_probe_refuses_a_level_the_backend_cant_enforce(self):
+        b = FakeBackend()
+        b.capabilities = lambda: __import__("perseus.sandbox.backends", fromlist=["Capabilities"]).Capabilities(
+            network_levels=("none", "full"))
+        with self.assertRaises(SandboxError):
+            probe(b, RunSettings(network="packages"))
+
+    def test_offline_call_uses_no_network_whatever_the_setting(self):
+        b = FakeBackend()
+        r = run_program(b, "python", "x", settings=RunSettings(network="full"), offline=True)
+        self.assertEqual((r["network"], b.sessions[-1].spec.network), ("none", "none"))
+        r = run_program(b, "python", "x", settings=RunSettings(network="packages"))
+        self.assertEqual(r["network"], "packages")
 
 
 class Backends(unittest.TestCase):
@@ -146,11 +179,12 @@ class BrokerAndClient(unittest.TestCase):
         self.assertEqual((r["status"], r["stdout"]), ("ok", "4\n"))
 
     def test_bad_token_refused(self):
+        before = len(self.backend.sessions)                            # the start-up probe's
         bad = SandboxClient(self.httpd.server_address[1], "wrong" * 8)
         self.assertIn("error", bad.info())
         with self.assertRaises(ToolFailure):
             bad.run("python", "x")
-        self.assertEqual(self.backend.sessions[-1:], self.backend.sessions[:1])  # only the probe's session
+        self.assertEqual(len(self.backend.sessions), before)             # nothing ran
 
     def test_language_not_installed_names_the_alternatives(self):
         self.broker.state["languages"] = ["python"]
@@ -247,7 +281,8 @@ class Launch(unittest.TestCase):
     def test_connect_provides_the_capability_with_found_languages(self):
         reg, client = Registry(), mock.Mock()
         client.info.return_value = {"backend": "e2b", "languages": ["python", "rust"], "missing": ["go"],
-                                    "network_blocked": True, "internet": False}
+                                    "network": "packages", "network_blocked": True, "packages_ok": True,
+                                    "offline_ok": True}
         ok, msg = launch.connect(client, reg)
         self.assertTrue(ok)
         self.assertIn("not installed: go", msg)
@@ -256,11 +291,38 @@ class Launch(unittest.TestCase):
     def test_connect_fails_closed_when_the_network_is_open(self):
         reg, client = Registry(), mock.Mock()
         reg.provide("sandbox")
-        client.info.return_value = {"languages": ["python"], "network_blocked": False, "internet": False}
+        for level in ("none", "packages"):
+            with self.subTest(level=level):
+                reg.provide("sandbox")
+                client.info.return_value = {"languages": ["python"], "network": level, "network_blocked": False,
+                                            "offline_ok": True}
+                ok, msg = launch.connect(client, reg)
+                self.assertFalse(ok)
+                self.assertIn(f'network = "{level}"', msg)
+                self.assertNotIn("sandbox", reg._caps)
+
+    def test_connect_runs_offline_when_internet_access_is_off_if_it_can(self):
+        reg, client = Registry(), mock.Mock()
+        client.info.return_value = {"backend": "e2b", "languages": ["python"], "network": "full",
+                                    "network_blocked": None, "offline_ok": True}
+        self.assertTrue(launch.connect(client, reg)[0])
+        self.assertFalse(reg._caps["sandbox"].reaches_web)              # stays offered; calls just go offline
+        self.assertIn("except while Internet Access is off", reg._caps["sandbox"].note)
+        client.info.return_value = {**client.info.return_value, "offline_ok": False}
         ok, msg = launch.connect(client, reg)
-        self.assertFalse(ok)
-        self.assertIn("could reach the internet", msg)
-        self.assertNotIn("sandbox", reg._caps)
+        self.assertTrue(ok)
+        self.assertTrue(reg._caps["sandbox"].reaches_web)               # can't go offline: withdrawn when off
+        self.assertIn("withdrawn while Internet Access is off", msg)
+        self.assertNotIn("Internet Access", reg._caps["sandbox"].note)
+
+    def test_connect_warns_when_registries_are_unreachable(self):
+        reg, client = Registry(), mock.Mock()
+        client.info.return_value = {"backend": "e2b", "languages": ["python"], "network": "packages",
+                                    "network_blocked": True, "packages_ok": False, "offline_ok": True}
+        ok, msg = launch.connect(client, reg)
+        self.assertTrue(ok)
+        self.assertIn("installs will fail", msg)
+        self.assertIn("install packages", reg._caps["sandbox"].note)
 
     def test_connect_reports_broker_errors(self):
         reg, client = Registry(), mock.Mock()
@@ -408,7 +470,16 @@ class Config(unittest.TestCase):
 
     def test_defaults(self):
         cr = validate_config(dict(self.base))["code_runner"]
-        self.assertEqual((cr["enabled"], cr["backend"], cr["internet"], cr["run_timeout_s"]), (True, "e2b", False, 30))
+        self.assertEqual((cr["enabled"], cr["backend"], cr["network"], cr["run_timeout_s"]), (True, "e2b", "packages", 30))
+
+    def test_old_keys_say_what_replaced_them(self):
+        for key, value, needle in (("internet", False, 'network = "none", "packages" or "full"'),
+                                   ("key_file", "/x", "[secrets] code_runner_api_key")):
+            with self.subTest(key=key), self.assertRaises(ConfigError) as c:
+                validate_config({**self.base, "code_runner": {key: value}})
+            self.assertIn(needle, " ".join(c.exception.problems))
+        with self.assertRaises(ConfigError):
+            validate_config({**self.base, "code_runner": {"network": "some"}})
 
     def test_bad_values_named(self):
         for key, value, needle in (("run_timeout_s", 0, "between 1 and 120"), ("build_timeout_s", 600, "between 5"),
@@ -505,9 +576,23 @@ class E2BBackendStub(unittest.TestCase):
     def backend(self, key="good"):
         return self.mod.E2BBackend({"e2b_template": "perseus-code"}, environ={"E2B_API_KEY": key})
 
-    def test_create_passes_internet_template_and_key(self):
+    def test_network_levels_map_to_e2b_options(self):
         from perseus.sandbox.backends import SessionSpec
-        s = self.backend().open(SessionSpec(internet=False, lifetime_s=400))
+        from perseus.sandbox.network import PACKAGE_HOSTS
+        b = self.backend()
+        b.open(SessionSpec(network="full"))
+        self.assertIs(StubSandbox.created[-1].kw["allow_internet_access"], True)
+        b.open(SessionSpec(network="packages"))
+        kw = StubSandbox.created[-1].kw
+        self.assertEqual(kw["network"], {"allow_out": list(PACKAGE_HOSTS), "deny_out": ["0.0.0.0/0"]})
+        self.assertNotIn("allow_internet_access", kw)
+        b.open(SessionSpec(network="none"))
+        self.assertIs(StubSandbox.created[-1].kw["allow_internet_access"], False)
+
+    def test_create_passes_template_and_key(self):
+        from perseus.sandbox.backends import SessionSpec
+        StubSandbox.created = []
+        s = self.backend().open(SessionSpec(network="none", lifetime_s=400))
         kw = StubSandbox.created[0].kw
         self.assertEqual((kw["template"], kw["allow_internet_access"], kw["api_key"], kw["timeout"]),
                          ("perseus-code", False, "good", 400))

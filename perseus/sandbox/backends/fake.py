@@ -4,14 +4,17 @@
     backend.on("./main", ExecResult(0, "hi\n"))      # exact command -> result
     backend.fail_open = SandboxError("quota", "...")  # make open() fail
 
-Unscripted commands succeed with empty output, so language checks pass by default.
+Unscripted commands succeed with empty output, so language checks pass by default, and the
+network probe answers like a correctly firewalled sandbox at the session's level.
 `sessions` records every session for assertions (files written, commands run, closed).
 """
 
 from __future__ import annotations
 
+import json
 from typing import Callable
 
+from perseus.sandbox import network
 from perseus.sandbox.backends import Capabilities, ExecResult, SandboxError, SessionSpec
 
 
@@ -33,6 +36,11 @@ class FakeSession:
                 if isinstance(r, SandboxError):
                     raise r
                 return r
+        if cmd.startswith("python3 netprobe.py"):
+            urls = json.loads(cmd.split(" ", 2)[2].strip("'"))
+            lvl = self.spec.network
+            seen = {u: lvl == "full" or (lvl == "packages" and u == network.PROBE_PACKAGES) for u in urls}
+            return ExecResult(0, "PROBE " + json.dumps(seen) + "\n")
         return ExecResult(0, "", "")
 
     def close(self) -> None:

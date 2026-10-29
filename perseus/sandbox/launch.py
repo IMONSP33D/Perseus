@@ -12,6 +12,7 @@ import sys
 from dataclasses import dataclass, field
 
 from perseus.sandbox.backends import CONFIGURABLE
+from perseus.sandbox.network import NOTES
 
 KEY_ENV = "E2B_API_KEY"
 
@@ -72,7 +73,11 @@ def broker_env(environ, p: Plan, token: str) -> dict:
 
 
 def connect(client, registry) -> tuple[bool, str]:
-    """Read the broker's probe and provide the "sandbox" capability, or withdraw it and say why."""
+    """Read the broker's probe and provide the "sandbox" capability, or withdraw it and say why.
+
+    Fails closed twice over: if arbitrary sites are reachable at a level that should block them,
+    run_code stays off; if a forced-offline call (Internet Access off) still has network, run_code
+    is withdrawn whenever Internet Access is off instead of running offline."""
     info = client.info()
     err = info.get("error")
     if err:
@@ -82,11 +87,21 @@ def connect(client, registry) -> tuple[bool, str]:
     if not langs:
         registry.withdraw("sandbox")
         return False, "off (no language toolchains found in the sandbox)"
-    if not info.get("internet") and info.get("network_blocked") is not True:
-        registry.withdraw("sandbox")   # fail closed: never offer a sandbox whose network we couldn't close
-        return False, "off (the sandbox could reach the internet although [code_runner] internet = false)"
-    registry.provide("sandbox", reaches_web=bool(info.get("internet")), enums={"language": langs})
+    level = info.get("network") or "none"
+    if level in ("none", "packages") and info.get("network_blocked") is not True:
+        registry.withdraw("sandbox")
+        return False, f'off (the sandbox could reach other sites although [code_runner] network = "{level}")'
+    offline_ok = info.get("offline_ok") is True
+    note = NOTES.get(level, "")
+    if level != "none" and not offline_ok:
+        note = note.split(" While Internet Access is off")[0].split(", except while")[0].rstrip(".") + "."
+    registry.provide("sandbox", reaches_web=level != "none" and not offline_ok, enums={"language": langs}, note=note)
+    parts = [str(info.get("backend")), ", ".join(langs), f"network {level}"]
+    if level == "packages" and info.get("packages_ok") is False:
+        parts.append("! package registries unreachable, installs will fail")
+    if level != "none" and not offline_ok:
+        parts.append("! couldn't make offline runs network-less, so run_code is withdrawn while Internet Access is off")
     missing = info.get("missing") or []
-    net = "internet on" if info.get("internet") else "no network"
-    return True, (f"{info.get('backend')} · {', '.join(langs)} · {net}"
-                  + (f" · not installed: {', '.join(missing)}" if missing else ""))
+    if missing:
+        parts.append(f"not installed: {', '.join(missing)}")
+    return True, " · ".join(parts)

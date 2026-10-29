@@ -66,7 +66,9 @@ class Broker:
             self.state["capabilities"] = {"os": caps.os, "controls_network": caps.controls_network, **caps.extras}
             log(f"{self.backend_name}: {len(self.state['languages'])} language(s) available "
                 f"({', '.join(self.state['languages']) or 'none'}); missing: {', '.join(self.state['missing']) or 'none'}; "
-                f"network blocked: {self.state['network_blocked']}; probe {self.state['seconds']}s")
+                f"network {self.state['network']}: arbitrary sites blocked {self.state['network_blocked']}, "
+                f"registries reachable {self.state['packages_ok']}, offline really offline {self.state['offline_ok']}; "
+                f"probe {self.state['seconds']}s")
         except SandboxError as e:
             self.state["error"] = {"code": e.code, "message": str(e)}
             log(f"{self.backend_name}: not available ({e.code}): {e}")
@@ -77,7 +79,7 @@ class Broker:
             self.state["probing"] = False
 
     def info(self) -> dict:
-        return {"backend": self.backend_name, "internet": self.run_settings.internet,
+        return {"backend": self.backend_name, "network": self.run_settings.network,
                 "limits": {"build_timeout_s": self.run_settings.build_timeout_s,
                            "run_timeout_s": self.run_settings.run_timeout_s,
                            "max_output_kb": self.run_settings.max_output_kb},
@@ -88,6 +90,7 @@ class Broker:
         if self.state["error"] or self.backend is None:
             return 503, {"error": self.state["error"] or {"code": "unavailable", "message": "starting up"}}
         language, code, stdin = body.get("language"), body.get("code"), body.get("stdin") or ""
+        offline = bool(body.get("offline"))
         if not isinstance(language, str) or not isinstance(code, str) or not isinstance(stdin, str):
             return 400, {"error": {"code": "config", "message": "language and code must be strings"}}
         if language not in self.state["languages"]:
@@ -96,8 +99,8 @@ class Broker:
         if not self._slots.acquire(blocking=False):
             return 429, {"error": {"code": "quota", "message": "too many programs running at once"}}
         try:
-            result = run_program(self.backend, language, code, stdin, self.run_settings)
-            log(f"run {language}: {result['status']} in {result['seconds']}s")
+            result = run_program(self.backend, language, code, stdin, self.run_settings, offline=offline)
+            log(f"run {language} (network {result['network']}): {result['status']} in {result['seconds']}s")
             return 200, result
         except SandboxError as e:
             log(f"run {language}: sandbox error ({e.code}): {e}")

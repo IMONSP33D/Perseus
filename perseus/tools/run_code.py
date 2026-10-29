@@ -1,8 +1,10 @@
-"""run_code: build and run a program in a fresh, remote, network-less sandbox (via ctx.sandbox).
+"""run_code: build and run a program in a fresh, remote sandbox (via ctx.sandbox).
 
 Offered only when the code runner is up (requires="sandbox"); the language list
-the model sees is what the sandbox actually has installed. Output is untrusted
-data: a program can print text that looks like instructions.
+the model sees is what the sandbox actually has installed, and a line about the
+sandbox's network is added to the description. A call made while the chat's
+Internet Access is off runs with no network. Output is untrusted data: a program
+can print text that looks like instructions.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ def render(r: dict) -> str:
 @tool(description="Run a short program in a fresh, isolated Linux sandbox and return its output. "
                   "Use it to test code, check a computation or reproduce an error. Returns the outcome "
                   "(ok, compile_error, runtime_error or timeout), the exit code, stdout and stderr. "
-                  "One source file per call, input only via stdin, no network, nothing kept between calls.",
+                  "One source file per call, input only via stdin, nothing kept between calls.",
       parameters={"type": "object", "properties": {
           "language": {"type": "string", "enum": names(), "description": "Programming language of the code."},
           "code": {"type": "string", "minLength": 1, "maxLength": 100_000,
@@ -54,6 +56,10 @@ def render(r: dict) -> str:
 def run_code(ctx, language: str, code: str, stdin: str = ""):
     if ctx.sandbox is None:
         raise ToolFailure("the code runner is off")
-    r = ctx.sandbox.run(language, code, stdin)
+    offline = not ctx.allow_web
+    r = ctx.sandbox.run(language, code, stdin, offline=offline)
+    text = render(r)
+    if offline and getattr(ctx.sandbox, "network", "none") != "none":
+        text += "\n\n(Internet Access is off for this chat, so this ran with no network.)"
     return {"language": language, "status": r.get("status"), "exit_code": r.get("exit_code"),
-            "seconds": r.get("seconds"), "text": render(r)}
+            "seconds": r.get("seconds"), "text": text}
