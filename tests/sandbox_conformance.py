@@ -130,13 +130,6 @@ class Conformance:
         self.assertIn("https://pypi.org/simple/ OPEN", r["stdout"], r)
         self.assertIn("https://example.com/ BLOCKED", r["stdout"], r)
 
-    def test_offline_call_has_no_network_even_when_the_setting_allows_it(self):
-        level = "full" if "full" in self.backend.capabilities().network_levels else "none"
-        s = RunSettings(**{**self.settings.__dict__, "network": level})
-        code = ("import urllib.request\ntry:\n    urllib.request.urlopen('https://example.com/', timeout=6)\n"
-                "    print('OPEN')\nexcept Exception:\n    print('BLOCKED')")
-        r = run_program(self.backend, "python", code, settings=s, offline=True)
-        self.assertEqual((r["network"], r["stdout"].strip()), ("none", "BLOCKED"))
 
     def test_huge_output_is_capped_keeping_head_and_tail(self):
         r = self.run_("python", "print('FIRST')\nprint('x' * 2_000_000)\nprint('LAST')", max_output_kb=16)

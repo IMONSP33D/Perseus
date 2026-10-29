@@ -5,7 +5,8 @@
               any other site is refused
     full      the open internet
 
-Whatever the setting, a call made while the chat's Internet Access switch is off runs with "none".
+This is separate from web search: the dashboard's Internet Access switch controls the model's
+research (web_search, fetch_url), not what sandboxed programs can reach.
 
 "packages" is enforced by the backend's firewall by host name (E2B: allow_out / deny_out). It is much
 tighter than "full" but not sealed: DNS lookups still work, which is a slow side channel, and anything
@@ -28,9 +29,8 @@ PACKAGE_HOSTS = (
 # what the model is told about the network, appended to run_code's description
 NOTES = {
     "none": "Programs have no network access.",
-    "packages": ("Programs can install packages (pip, npm, cargo, go) but can't reach any other site. "
-                 "While Internet Access is off they have no network at all."),
-    "full": "Programs can reach the internet, except while Internet Access is off.",
+    "packages": "Programs can install packages (pip, npm, cargo, go) but can't reach any other site.",
+    "full": "Programs can reach the internet.",
 }
 
 # Start-up probe: real HTTPS requests (a firewall that filters by TLS host name can let a bare TCP

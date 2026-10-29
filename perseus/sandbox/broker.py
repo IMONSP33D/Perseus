@@ -67,7 +67,7 @@ class Broker:
             log(f"{self.backend_name}: {len(self.state['languages'])} language(s) available "
                 f"({', '.join(self.state['languages']) or 'none'}); missing: {', '.join(self.state['missing']) or 'none'}; "
                 f"network {self.state['network']}: arbitrary sites blocked {self.state['network_blocked']}, "
-                f"registries reachable {self.state['packages_ok']}, offline really offline {self.state['offline_ok']}; "
+                f"registries reachable {self.state['packages_ok']}; "
                 f"probe {self.state['seconds']}s")
         except SandboxError as e:
             self.state["error"] = {"code": e.code, "message": str(e)}
@@ -90,7 +90,6 @@ class Broker:
         if self.state["error"] or self.backend is None:
             return 503, {"error": self.state["error"] or {"code": "unavailable", "message": "starting up"}}
         language, code, stdin = body.get("language"), body.get("code"), body.get("stdin") or ""
-        offline = bool(body.get("offline"))
         if not isinstance(language, str) or not isinstance(code, str) or not isinstance(stdin, str):
             return 400, {"error": {"code": "config", "message": "language and code must be strings"}}
         if language not in self.state["languages"]:
@@ -99,7 +98,7 @@ class Broker:
         if not self._slots.acquire(blocking=False):
             return 429, {"error": {"code": "quota", "message": "too many programs running at once"}}
         try:
-            result = run_program(self.backend, language, code, stdin, self.run_settings, offline=offline)
+            result = run_program(self.backend, language, code, stdin, self.run_settings)
             log(f"run {language} (network {result['network']}): {result['status']} in {result['seconds']}s")
             return 200, result
         except SandboxError as e:

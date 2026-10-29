@@ -103,11 +103,13 @@ class Runner(unittest.TestCase):
 
     def test_probe_per_level(self):
         none = probe(FakeBackend(), RunSettings(network="none"))
-        self.assertEqual((none["network_blocked"], none["packages_ok"], none["offline_ok"]), (True, None, True))
+        self.assertEqual((none["network_blocked"], none["packages_ok"]), (True, None))
         pk = probe(FakeBackend(), RunSettings(network="packages"))
-        self.assertEqual((pk["network_blocked"], pk["packages_ok"], pk["offline_ok"]), (True, True, True))
-        full = probe(FakeBackend(), RunSettings(network="full"))
-        self.assertEqual((full["network_blocked"], full["offline_ok"]), (None, True))
+        self.assertEqual((pk["network_blocked"], pk["packages_ok"]), (True, True))
+        b = FakeBackend()
+        full = probe(b, RunSettings(network="full"))
+        self.assertIsNone(full["network_blocked"])
+        self.assertEqual(len(b.sessions), 1)                       # one sandbox at start-up, not two
 
     def test_probe_uses_real_https_requests(self):
         b = FakeBackend()
@@ -128,12 +130,11 @@ class Runner(unittest.TestCase):
         with self.assertRaises(SandboxError):
             probe(b, RunSettings(network="packages"))
 
-    def test_offline_call_uses_no_network_whatever_the_setting(self):
-        b = FakeBackend()
-        r = run_program(b, "python", "x", settings=RunSettings(network="full"), offline=True)
-        self.assertEqual((r["network"], b.sessions[-1].spec.network), ("none", "none"))
-        r = run_program(b, "python", "x", settings=RunSettings(network="packages"))
-        self.assertEqual(r["network"], "packages")
+    def test_each_run_uses_the_configured_level(self):
+        for level in ("none", "packages", "full"):
+            b = FakeBackend()
+            r = run_program(b, "python", "x", settings=RunSettings(network=level))
+            self.assertEqual((r["network"], b.sessions[-1].spec.network), (level, level))
 
 
 class Backends(unittest.TestCase):
@@ -301,19 +302,16 @@ class Launch(unittest.TestCase):
                 self.assertIn(f'network = "{level}"', msg)
                 self.assertNotIn("sandbox", reg._caps)
 
-    def test_connect_runs_offline_when_internet_access_is_off_if_it_can(self):
-        reg, client = Registry(), mock.Mock()
-        client.info.return_value = {"backend": "e2b", "languages": ["python"], "network": "full",
-                                    "network_blocked": None, "offline_ok": True}
-        self.assertTrue(launch.connect(client, reg)[0])
-        self.assertFalse(reg._caps["sandbox"].reaches_web)              # stays offered; calls just go offline
-        self.assertIn("except while Internet Access is off", reg._caps["sandbox"].note)
-        client.info.return_value = {**client.info.return_value, "offline_ok": False}
-        ok, msg = launch.connect(client, reg)
-        self.assertTrue(ok)
-        self.assertTrue(reg._caps["sandbox"].reaches_web)               # can't go offline: withdrawn when off
-        self.assertIn("withdrawn while Internet Access is off", msg)
-        self.assertNotIn("Internet Access", reg._caps["sandbox"].note)
+    def test_connect_tells_the_model_the_level_and_never_ties_it_to_web_search(self):
+        for level, words in (("none", "no network"), ("packages", "install packages"), ("full", "reach the internet")):
+            with self.subTest(level=level):
+                reg, client = Registry(), mock.Mock()
+                client.info.return_value = {"backend": "e2b", "languages": ["python"], "network": level,
+                                            "network_blocked": None if level == "full" else True, "packages_ok": True}
+                self.assertTrue(launch.connect(client, reg)[0])
+                self.assertIn(words, reg._caps["sandbox"].note)
+                self.assertNotIn("Internet Access", reg._caps["sandbox"].note)
+                self.assertFalse(reg._caps["sandbox"].reaches_web)     # the switch doesn't withdraw run_code
 
     def test_connect_warns_when_registries_are_unreachable(self):
         reg, client = Registry(), mock.Mock()
@@ -467,6 +465,22 @@ class EngineIntegration(unittest.TestCase):
         ev = r.events[0]
         self.assertIsNone(ev.http_status)
         self.assertEqual(ev.outcome, "program failed · exit 1")
+
+    def test_run_code_works_with_internet_access_off_at_every_level(self):
+        from perseus.tools import run_code as mod   # the real built-in tool
+        for level in ("none", "packages", "full"):
+            with self.subTest(level=level):
+                reg = load_builtin()
+                reg.provide("sandbox", enums={"language": ["python"]})
+                sb = mock.Mock(network=level)
+                sb.run.return_value = {"status": "ok", "exit_code": 0, "stdout": "hi", "stderr": "", "network": level}
+                llm = ScriptedLLM([call("run_code", {"language": "python", "code": "print('hi')"})], "done")
+                r = Engine(llm, reg, ToolContext(sandbox=sb), Feed()).run_turn([], "q", opts=TurnOptions(allow_web=False))
+                self.assertIn("run_code", llm.seen[0]["tools"])
+                self.assertNotIn("web_search", llm.seen[0]["tools"])
+                self.assertEqual(r.events[0].status, "ok")
+                sb.run.assert_called_once_with("python", "print('hi')", "")   # no offline override
+                reg.withdraw("sandbox")
 
     def test_untrusted_rule_in_the_system_prompt_even_with_internet_off(self):
         e = self.engine(ScriptedLLM("hi"))

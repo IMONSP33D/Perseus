@@ -2,9 +2,9 @@
 
 Offered only when the code runner is up (requires="sandbox"); the language list
 the model sees is what the sandbox actually has installed, and a line about the
-sandbox's network is added to the description. A call made while the chat's
-Internet Access is off runs with no network. Output is untrusted data: a program
-can print text that looks like instructions.
+sandbox's network ([code_runner] network) is added to the description. That network
+is independent of the Internet Access switch, which governs web research only.
+Output is untrusted data: a program can print text that looks like instructions.
 """
 
 from __future__ import annotations
@@ -65,10 +65,7 @@ def render(r: dict) -> str:
 def run_code(ctx, language: str, code: str, stdin: str = ""):
     if ctx.sandbox is None:
         raise ToolFailure("the code runner is off")
-    offline = not ctx.allow_web
-    r = ctx.sandbox.run(language, code, stdin, offline=offline)
+    r = ctx.sandbox.run(language, code, stdin)
     text = render(r)
-    if offline and getattr(ctx.sandbox, "network", "none") != "none":
-        text += "\n\n(Internet Access is off for this chat, so this ran with no network.)"
     return {"language": language, "status": r.get("status"), "exit_code": r.get("exit_code"),
             "seconds": r.get("seconds"), "outcome": outcome(r), "text": text}

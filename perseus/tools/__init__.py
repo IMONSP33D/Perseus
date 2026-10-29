@@ -71,7 +71,6 @@ class ToolContext:
     limits: dict = field(default_factory=dict)
     engines: list[str] | None = None   # search engines chosen in the dashboard; None = all configured
     sandbox: Any = None          # perseus.sandbox.client.SandboxClient, or None when the code runner is off
-    allow_web: bool = True       # this chat's Internet Access switch, set per call by the engine
 
 
 @dataclass

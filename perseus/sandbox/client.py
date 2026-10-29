@@ -68,10 +68,9 @@ class SandboxClient:
             self.request_timeout_s = limits.get("build_timeout_s", 120) + limits.get("run_timeout_s", 30) + 90
         return data
 
-    def run(self, language: str, code: str, stdin: str = "", offline: bool = False) -> dict:
-        """`offline`: no network for this call, whatever the setting (the chat's Internet Access is off)."""
-        status, data = self._call("POST", "/run", {"language": language, "code": code, "stdin": stdin,
-                                                   "offline": offline}, timeout=self.request_timeout_s)
+    def run(self, language: str, code: str, stdin: str = "") -> dict:
+        status, data = self._call("POST", "/run", {"language": language, "code": code, "stdin": stdin},
+                                  timeout=self.request_timeout_s)
         if status == 200:
             return data
         err = data.get("error") or {}

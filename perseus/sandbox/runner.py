@@ -71,10 +71,9 @@ def _exit_note(code: int | None) -> str | None:
 
 
 def run_program(backend: Backend, language: str, code: str, stdin: str = "",
-                settings: RunSettings | None = None, offline: bool = False) -> dict:
-    """`offline`: run this call with no network whatever the setting (Internet Access is off)."""
+                settings: RunSettings | None = None) -> dict:
     s = settings or RunSettings()
-    level = "none" if offline else s.network
+    level = s.network
     lang = LANGUAGES.get(language)
     if lang is None:
         raise SandboxError("config", f"unknown language {language!r}")
@@ -142,7 +141,6 @@ def probe(backend: Backend, settings: RunSettings | None = None) -> dict:
 
     network_blocked  arbitrary sites are unreachable at the configured level (None for "full")
     packages_ok      the registries are reachable ("packages" only)
-    offline_ok       a call forced offline (Internet Access switch off) really has no network
     """
     s = settings or RunSettings()
     t0 = time.monotonic()
@@ -150,7 +148,7 @@ def probe(backend: Backend, settings: RunSettings | None = None) -> dict:
     if s.network not in levels:
         raise SandboxError("config", f"this sandbox backend can't enforce network = {s.network!r} "
                                      f"(it supports {', '.join(levels)})")
-    out: dict = {"network": s.network, "network_blocked": None, "packages_ok": None, "offline_ok": None}
+    out: dict = {"network": s.network, "network_blocked": None, "packages_ok": None}
     session = backend.open(SessionSpec(network=s.network, lifetime_s=300))
     available, missing = [], []
     try:
@@ -164,16 +162,7 @@ def probe(backend: Backend, settings: RunSettings | None = None) -> dict:
             out["network_blocked"] = not any(seen[u] for u in network.PROBE_ARBITRARY)
             if s.network == "packages":
                 out["packages_ok"] = seen[network.PROBE_PACKAGES]
-            if s.network == "none":
-                out["offline_ok"] = out["network_blocked"]
     finally:
         session.close()
-    if s.network != "none":                  # a second, network-less session: what Internet Access off gets
-        session = backend.open(SessionSpec(network="none", lifetime_s=120))
-        try:
-            seen = _reachable(session, "python" in available, list(network.PROBE_ARBITRARY))
-            out["offline_ok"] = not any(seen.values())
-        finally:
-            session.close()
     out.update(languages=available, missing=missing, seconds=round(time.monotonic() - t0, 2))
     return out

@@ -14,7 +14,6 @@ Every step lands in the tool feed. Refused calls are never executed.
 from __future__ import annotations
 
 import concurrent.futures
-import dataclasses
 import json
 import re
 import threading
@@ -389,11 +388,9 @@ class Engine:
             if recorded is None:
                 raise ToolFailure("replay: this call isn't in the recording")
             return recorded
-        # each call gets its own context carrying this chat's Internet Access switch (the base is shared by chats)
-        ctx = dataclasses.replace(self.ctx, allow_web=self._opts.allow_web)
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"tool-{tool.name}")
         try:
-            return pool.submit(tool.fn, ctx, **args).result(timeout=tool.timeout_s)
+            return pool.submit(tool.fn, self.ctx, **args).result(timeout=tool.timeout_s)
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
