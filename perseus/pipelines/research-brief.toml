@@ -1,0 +1,71 @@
+# Scope a question, research it, fact-check the findings and write a brief.
+# Format and rules: perseus/pipelines/__init__.py
+
+[pipeline]
+name    = "Research brief"
+summary = "Scope a question, gather sources, fact-check them independently, then write the brief."
+status  = "draft"
+
+[[stage]]
+id        = "scope"
+role      = "Research Lead"
+goal      = "Turn the question into precise sub-questions and a search plan."
+prompt    = '''
+Restate the question so it can be answered. Split it into sub-questions, say what kind of source
+would settle each one, and what would count as a good-enough answer.
+'''
+tools     = ["current_time"]
+inputs    = ["request"]
+outputs   = ["brief_plan"]
+done_when = ["Each sub-question names the kind of source that would settle it."]
+thinking  = "low"
+
+[[stage]]
+id        = "research"
+role      = "Researcher"
+goal      = "Answer each sub-question from sources, with citations."
+prompt    = '''
+Work through the sub-questions. Prefer primary sources. For every finding, record the claim, the
+URL and a short supporting excerpt in your own words. Mark anything you could not verify.
+'''
+tools     = ["web_search", "fetch_url", "calculator"]
+inputs    = ["request", "brief_plan"]
+outputs   = ["findings"]
+done_when = [
+  "Every sub-question has a finding or is marked unanswered.",
+  "Every finding has a URL.",
+]
+thinking  = "medium"
+
+[[stage]]
+id         = "fact_check"
+role       = "Fact Checker"
+kind       = "review"
+goal       = "Check the findings against their sources, independently."
+prompt     = '''
+Open the cited sources and check that each one supports its claim. Flag claims that are
+unsupported, outdated, overstated or contradicted by a better source.
+'''
+tools      = ["web_search", "fetch_url"]
+inputs     = ["brief_plan", "findings"]
+on_revise  = "research"
+max_rounds = 2
+done_when  = [
+  "Every finding is supported by the source it cites.",
+  "Nothing important in the plan is left unanswered without saying so.",
+]
+thinking   = "medium"
+
+[[stage]]
+id        = "write"
+role      = "Writer"
+goal      = "Write a clear brief from the checked findings."
+prompt    = '''
+Write a brief that answers the question directly first, then gives the supporting detail. Cite the
+URLs inline. Keep facts apart from inference and say what is still uncertain.
+'''
+tools     = []
+inputs    = ["request", "findings"]
+outputs   = ["brief"]
+done_when = ["The answer comes first and every claim is cited."]
+thinking  = "low"

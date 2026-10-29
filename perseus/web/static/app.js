@@ -258,13 +258,15 @@
   // ------------------------------------------------------------------ header
   function renderHeader() {
     const inSettings = ui.view === 'settings';
+    const inChat = ui.view === 'chat';
     const c = active();
-    $('header-title').textContent = inSettings ? 'Settings' : (c ? c.title : 'New chat');
-    $('chat-controls').hidden = inSettings;
+    $('header-title').textContent = inSettings ? 'Settings' : ui.view === 'pipelines' ? 'Development Pipelines'
+      : ui.view === 'tools' ? 'Tools' : (c ? c.title : 'New chat');
+    $('chat-controls').hidden = !inChat;
     const gear = $('gear');
     gear.setAttribute('aria-pressed', String(inSettings));
     gear.setAttribute('aria-label', inSettings ? 'Close settings' : 'Open settings');
-    $('show-feed').hidden = ui.feedOpen || inSettings;
+    $('show-feed').hidden = ui.feedOpen || !inChat;
 
     const s = settings();
     const pill = $('internet-pill');
@@ -933,15 +935,310 @@
   $('raw-close').addEventListener('click', () => $('raw').close());
   $('raw').addEventListener('click', (e) => { if (e.target === $('raw')) $('raw').close(); });
 
+  // ------------------------------------------------------------------ development pipelines + tools (WIP)
+  // Read-only for now: pipelines are shown, not run. Data comes from /api/pipelines and /api/tools.
+  const dev = { pipelines: null, errors: [], tools: null, folder: 'perseus/pipelines', loading: false, error: null,
+                pid: store.get('pipeline', null), stage: {}, filter: '' };
+  const isDev = () => ui.view === 'pipelines' || ui.view === 'tools';
+  const TOOL_ICONS = { web_search: 'search', fetch_url: 'fetch', calculator: 'calc', current_time: 'clock' };
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+  async function loadDev() {
+    if (dev.loading) return;
+    dev.loading = true; dev.error = null;
+    if (!dev.pipelines) renderDev();
+    try {
+      const [p, t] = await Promise.all([api('GET', '/api/pipelines'), api('GET', '/api/tools')]);
+      dev.pipelines = p.pipelines; dev.errors = p.errors || []; dev.folder = p.folder || dev.folder; dev.tools = t.tools;
+    } catch (e) { dev.error = e.message; }
+    dev.loading = false;
+    renderDev(); renderNav();
+  }
+
+  function openDev(view) {
+    hideTip();
+    ui.view = view; ui.menuOpen = false; ui.pending = null;
+    renderAll();
+    $('dev-view').scrollTop = 0;
+    loadDev();           // every visit: picks up pipeline and tool files added since
+  }
+
+  function renderNav() {
+    for (const id of ['nav-pipelines', 'nav-tools']) {
+      const b = $(id);
+      const on = ui.view === b.dataset.view;
+      b.classList.toggle('active', on);
+      if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    }
+    const n = dev.tools ? dev.tools.length : (ui.server && ui.server.tools ? ui.server.tools.length : null);
+    $('nav-tools-count').textContent = n == null ? '' : String(n);
+    $('nav-tools-count').setAttribute('aria-label', n == null ? '' : plural(n, 'tool'));
+  }
+
+  // ---- tooltip: one shared element, on hover (short delay) and on keyboard focus; Escape closes it
+  const tip = h('div', { id: 'dev-tip', class: 'tip', role: 'tooltip', hidden: true });
+  app.append(tip);
+  let tipOwner = null, tipTimer = null;
+  function showTip(el) {
+    clearTimeout(tipTimer);
+    if (!el.isConnected) return;
+    tipOwner = el;
+    tip.replaceChildren(...[].concat(el._tip()));
+    tip.hidden = false;
+    el.setAttribute('aria-describedby', 'dev-tip');
+    const r = el.getBoundingClientRect(), w = tip.offsetWidth, th = tip.offsetHeight;
+    const below = r.top - th - 10 < 8;
+    const left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, window.innerWidth - w - 8));
+    tip.style.left = left + 'px';
+    tip.style.top = (below ? r.bottom + 10 : r.top - th - 10) + 'px';
+    tip.style.setProperty('--arrow-x', Math.max(14, Math.min(w - 14, r.left + r.width / 2 - left)) + 'px');
+    tip.classList.toggle('below', below);
+  }
+  function hideTip() {
+    clearTimeout(tipTimer);
+    if (tipOwner) tipOwner.removeAttribute('aria-describedby');
+    tipOwner = null; tip.hidden = true;
+  }
+  function withTip(el, build) {
+    el._tip = build;
+    el.addEventListener('mouseenter', () => { clearTimeout(tipTimer); tipTimer = setTimeout(() => showTip(el), 150); });
+    el.addEventListener('mouseleave', hideTip);
+    el.addEventListener('focus', () => showTip(el));
+    el.addEventListener('blur', hideTip);
+    return el;
+  }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && tipOwner) hideTip(); });
+  let tipFrame = 0;   // follow the owner when the page scrolls (focusing an off-screen item scrolls it into view)
+  document.addEventListener('scroll', () => {
+    if (!tipOwner || tipFrame) return;
+    tipFrame = requestAnimationFrame(() => { tipFrame = 0; if (tipOwner) showTip(tipOwner); });
+  }, true);
+
+  function toolTip(name) {
+    const t = (dev.tools || []).find((x) => x.name === name);
+    if (!t) {
+      return [h('div', { class: 'tip-head' }, h('span', { class: 'tip-name mono', text: name }), h('span', { class: 'chip warn', text: 'Not installed' })),
+        h('p', { class: 'tip-desc', text: 'No tool with this name is loaded, so this stage would run without it. Add it to perseus/tools/ or remove it from the pipeline.' })];
+    }
+    const out = [h('div', { class: 'tip-head' }, h('span', { class: 'tip-name mono', text: t.name }),
+      h('span', { class: 'chip' + (t.web ? '' : ' run'), text: t.web ? 'Web' : 'Local' })),
+      h('p', { class: 'tip-desc', text: t.description })];
+    if (t.params.length) {
+      out.push(h('div', { class: 'tip-sub', text: 'Arguments' }),
+        h('ul', { class: 'tip-params' }, t.params.map((p) => h('li', {},
+          h('span', { class: 'mono tip-param', text: p.name }), h('span', { class: 'tip-type', text: p.type + (p.required ? '' : ' · optional') }),
+          p.description ? h('span', { class: 'tip-pdesc', text: p.description }) : null))));
+    } else out.push(h('div', { class: 'tip-sub', text: 'Takes no arguments' }));
+    const meta = [`Times out after ${t.timeout_s} s`];
+    if (t.used_by.length) meta.push('Used by ' + [...new Set(t.used_by.map((u) => u.role))].join(', '));
+    out.push(h('div', { class: 'tip-meta', text: meta.join(' · ') }));
+    return out;
+  }
+
+  function toolChip(name, missing) {
+    return withTip(h('button', { type: 'button', class: 'tool-chip mono' + (missing ? ' missing' : '') },
+      missing ? icon('alert') : null, name), () => toolTip(name));
+  }
+
+  // ---- shared states
+  function devState() {
+    if (dev.error && !dev.pipelines) {
+      return h('div', { class: 'dev-empty' }, h('p', { text: "Couldn't load development data: " + dev.error }),
+        h('button', { type: 'button', class: 'btn-secondary', onclick: loadDev }, 'Try again'));
+    }
+    return h('div', { class: 'dev-empty', 'aria-busy': 'true' }, h('div', { class: 'skeleton' }), h('div', { class: 'skeleton short' }));
+  }
+
+  function renderDev() {
+    if (!isDev()) return;
+    hideTip();
+    const body = $('dev-body');
+    if (!dev.pipelines) { body.replaceChildren(devState()); return; }
+    body.replaceChildren(...(ui.view === 'tools' ? toolsPage() : pipelinesPage()));
+  }
+
+  // ---- pipelines page
+  function pipelinesPage() {
+    const out = [h('div', { class: 'callout' }, icon('info'), h('div', {},
+      h('strong', { text: 'Preview. ' }),
+      'Pipelines don’t run yet. Each stage is a role with its own prompt and tools; when it finishes, its work is handed to the next stage in a ',
+      h('strong', { text: 'new context window' }),
+      ', so review stages judge the work without seeing how it was made.'))];
+    for (const e of dev.errors) {
+      out.push(h('div', { class: 'callout warn', role: 'alert' }, icon('alert'),
+        h('div', {}, h('strong', { class: 'mono', text: e.file }), ' wasn’t loaded: ' + e.error)));
+    }
+    if (!dev.pipelines.length) {
+      out.push(h('div', { class: 'card dev-empty' }, h('h2', { text: 'No pipelines yet' }),
+        h('p', { class: 'hint', text: `Add a .toml file to ${dev.folder}/. The format is described at the top of ${dev.folder}/__init__.py.` })));
+      return out;
+    }
+    const pl = dev.pipelines.find((p) => p.id === dev.pid) || dev.pipelines[0];
+    const sel = pl.stages.find((s) => s.id === dev.stage[pl.id]) || pl.stages[0];
+
+    if (dev.pipelines.length > 1) {
+      const tabs = h('div', { class: 'dev-tabs', role: 'tablist', 'aria-label': 'Pipelines' },
+        dev.pipelines.map((p) => h('button', { type: 'button', role: 'tab', class: 'dev-tab', id: 'pl-tab-' + p.id,
+          'aria-selected': String(p.id === pl.id), 'aria-controls': 'pl-panel', tabindex: p.id === pl.id ? '0' : '-1',
+          onclick: () => { dev.pid = p.id; store.set('pipeline', p.id); renderDev(); } },
+        h('span', { class: 'dev-tab-name', text: p.name }), h('span', { class: 'dev-tab-count', text: plural(p.stages.length, 'stage') }))));
+      tabs.addEventListener('keydown', (e) => {   // arrow keys move between tabs (WAI-ARIA tabs pattern)
+        const i = dev.pipelines.findIndex((p) => p.id === pl.id);
+        const j = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? dev.pipelines.length - 1 : null;
+        if (j === null) return;
+        e.preventDefault();
+        const next = dev.pipelines[(j + dev.pipelines.length) % dev.pipelines.length];
+        dev.pid = next.id; store.set('pipeline', next.id); renderDev();
+        $('pl-tab-' + next.id).focus();
+      });
+      out.push(tabs);
+    }
+
+    out.push(h('section', { class: 'card pl-card', id: 'pl-panel', role: dev.pipelines.length > 1 ? 'tabpanel' : null,
+      'aria-labelledby': dev.pipelines.length > 1 ? 'pl-tab-' + pl.id : null },
+      h('div', { class: 'pl-head' },
+        h('div', { class: 'pl-title' }, h('h2', { text: pl.name }), h('span', { class: 'chip ' + (pl.status === 'ready' ? '' : 'warn'), text: cap(pl.status) })),
+        h('span', { class: 'pl-source mono', title: 'Defined in', text: `${dev.folder}/${pl.source}` })),
+      h('p', { class: 'pl-summary', text: pl.summary }),
+      flow(pl, sel.id),
+      h('div', { class: 'legend' },
+        h('span', { class: 'legend-item' }, h('span', { class: 'conn-badge' }, icon('fresh')), 'New context window at every handoff'),
+        h('span', { class: 'legend-item' }, h('span', { class: 'legend-gate' }, icon('shield')), 'Review gate: pass moves on, revise sends the work back'))));
+    out.push(stageDetail(pl, sel));
+    out.push(h('p', { class: 'hint dev-foot' }, `Add or edit a pipeline in ${dev.folder}/ (one .toml file each). Changes show up the next time you open this page.`));
+    return out;
+  }
+
+  function flow(pl, selId) {
+    const grid = h('div', { class: 'flow', role: 'group', 'aria-label': `${pl.name}: ${plural(pl.stages.length, 'stage')}` });
+    grid.style.gridTemplateColumns = pl.stages.map(() => 'minmax(150px, 1fr)').join(' 56px ');
+    pl.stages.forEach((st, i) => {
+      if (i) grid.append(h('div', { class: 'conn', 'aria-hidden': 'true' }, h('span', { class: 'conn-line' }),
+        h('span', { class: 'conn-badge', title: 'New context window: only the listed artifacts are handed on' }, icon('fresh')),
+        pl.stages[i - 1].kind === 'review' ? h('span', { class: 'conn-label', text: 'pass' }) : null));
+      grid.append(stageCard(pl, st, i, st.id === selId));
+    });
+    let row = 2;
+    pl.stages.forEach((st, g) => {
+      if (st.kind !== 'review') return;
+      const t = pl.stages.findIndex((s) => s.id === st.on_revise);
+      const lane = h('div', { class: 'lane', 'aria-hidden': 'true' },
+        h('span', { class: 'lane-label' }, icon('revise'), `Revise · up to ${plural(st.max_rounds, 'round')}`));
+      lane.style.gridColumn = `${2 * t + 1} / ${2 * g + 2}`;
+      lane.style.gridRow = String(row++);
+      grid.append(lane);
+    });
+    return h('div', { class: 'flow-scroll' }, grid);
+  }
+
+  function stageCard(pl, st, i, on) {
+    const review = st.kind === 'review';
+    const target = review ? pl.stages.find((s) => s.id === st.on_revise) : null;
+    const missing = st.missing_tools.length;
+    return h('button', { type: 'button', class: 'stage' + (review ? ' gate' : '') + (on ? ' on' : ''),
+      'aria-pressed': String(on), 'aria-controls': 'stage-detail',
+      onclick: () => { dev.stage[pl.id] = st.id; renderDev(); const d = $('stage-detail'); if (d) d.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } },
+    h('span', { class: 'stage-top' }, h('span', { class: 'stage-num', text: String(i + 1) }),
+      h('span', { class: 'stage-kind' }, review ? icon('shield') : null, review ? 'Review gate' : 'Work')),
+    h('span', { class: 'stage-role', text: st.role }),
+    h('span', { class: 'stage-goal', text: st.goal }),
+    h('span', { class: 'stage-foot' },
+      h('span', { class: 'stage-meta' + (missing ? ' warn' : ''), title: missing ? 'Not installed: ' + st.missing_tools.join(', ') : null },
+        missing ? icon('alert') : icon('tool'), st.tools.length ? plural(st.tools.length, 'tool') : 'No tools'),
+      review ? h('span', { class: 'stage-meta' }, icon('revise'), 'Back to ' + (target ? target.role : st.on_revise))
+        : h('span', { class: 'stage-meta mono' }, icon('arrow'), st.outputs.join(', '))));
+  }
+
+  function stageDetail(pl, st) {
+    const i = pl.stages.indexOf(st);
+    const review = st.kind === 'review';
+    const roleOf = (id) => { const s = pl.stages.find((x) => x.id === id); return s ? s.role : id; };
+    const next = pl.stages[i + 1];
+    const section = (title, ...kids) => h('div', { class: 'sd-sec' }, h('h4', { text: title }), ...kids);
+
+    const receives = h('ul', { class: 'sd-list' }, st.inputs.map((a) => h('li', {},
+      h('span', { class: 'mono sd-art', text: a.name }),
+      h('span', { class: 'sd-from', text: a.name === 'request' ? 'what you asked for' : 'from ' + roleOf(a.from || '') }))));
+    const handsOn = review
+      ? h('ul', { class: 'sd-list' },
+        h('li', {}, h('span', { class: 'chip', text: 'Pass' }), h('span', { class: 'sd-from', text: next ? 'moves on to ' + next.role : 'pipeline complete' })),
+        h('li', {}, h('span', { class: 'chip warn', text: 'Revise' }),
+          h('span', { class: 'sd-from', text: `feedback goes back to ${roleOf(st.on_revise)} (up to ${plural(st.max_rounds, 'round')}, then a person decides)` })))
+      : h('ul', { class: 'sd-list' }, st.outputs.map((a) => h('li', {}, h('span', { class: 'mono sd-art', text: a }),
+        h('span', { class: 'sd-from', text: next ? 'to ' + next.role + (pl.stages.slice(i + 2).some((s) => s.inputs.some((x) => x.name === a)) ? ' and later stages' : '') : 'final output' }))));
+
+    const tools = st.tools.length
+      ? h('div', { class: 'tool-chips' }, st.tools.map((t) => toolChip(t, st.missing_tools.includes(t))))
+      : h('p', { class: 'hint', text: 'No tools: this stage works only from what it’s handed.' });
+
+    return h('section', { class: 'card stage-detail', id: 'stage-detail', 'aria-labelledby': 'sd-title' },
+      h('div', { class: 'sd-head' },
+        h('div', {}, h('div', { class: 'sd-eyebrow', text: `Stage ${i + 1} of ${pl.stages.length}` }),
+          h('h3', { id: 'sd-title', text: st.role })),
+        h('div', { class: 'sd-chips' }, h('span', { class: 'chip' + (review ? ' warn' : ' run'), text: review ? 'Review gate' : 'Work' }),
+          st.thinking ? h('span', { class: 'chip run', text: 'Thinking: ' + cap(st.thinking) }) : null)),
+      h('p', { class: 'sd-goal', text: st.goal }),
+      h('div', { class: 'sd-fresh' }, icon('fresh'),
+        'Starts in a fresh context window. It sees only the items under “Receives”, never earlier reasoning, tool results or chat.'),
+      h('div', { class: 'sd-grid' },
+        h('div', { class: 'sd-col' },
+          section('Role instructions', h('p', { class: 'sd-prompt', text: st.prompt })),
+          section(review ? 'Passes only if' : 'Done when', h('ul', { class: 'sd-checks' },
+            st.done_when.length ? st.done_when.map((c) => h('li', {}, icon('check'), h('span', { text: c })))
+              : h('li', { class: 'hint', text: 'No criteria set.' })))),
+        h('div', { class: 'sd-col' },
+          section('Receives', receives),
+          section(review ? 'Decides' : 'Hands on', handsOn),
+          section('Tools', tools))),
+      h('details', { class: 'sd-more' }, h('summary', {}, icon('chevron'), 'System prompt this stage gets'), codeBlock(st.system_prompt, 'text')),
+      h('details', { class: 'sd-more' }, h('summary', {}, icon('chevron'), 'Opening message it receives'), codeBlock(st.packet, 'text')));
+  }
+
+  // ---- tools page
+  function toolsPage() {
+    const tools = dev.tools || [];
+    const q = dev.filter.trim().toLowerCase();
+    const shown = tools.filter((t) => !q || t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q));
+    const input = h('input', { type: 'search', id: 'tool-filter', class: 'tool-filter', placeholder: 'Filter tools', 'aria-label': 'Filter tools', autocomplete: 'off' });
+    input.value = dev.filter;
+    input.addEventListener('input', () => {
+      dev.filter = input.value;
+      const at = input.selectionStart;
+      renderDev();
+      const again = $('tool-filter'); again.focus(); again.setSelectionRange(at, at);
+    });
+    const grid = h('div', { class: 'tool-grid', role: 'list', 'aria-label': 'Available tools' }, shown.map((t) => h('div', { role: 'listitem' },
+      withTip(h('button', { type: 'button', class: 'tool-tile' },
+        h('span', { class: 'tool-ico' }, icon(TOOL_ICONS[t.name] || 'tool')),
+        h('span', { class: 'tool-body' }, h('span', { class: 'tool-name mono', text: t.name }),
+          h('span', { class: 'tool-meta' },
+            h('span', { class: 'chip' + (t.web ? '' : ' run'), text: t.web ? 'Web' : 'Local' }),
+            h('span', { text: t.used_by.length ? 'Used in ' + plural(t.used_by.length, 'stage') : 'Not used in a pipeline' })))),
+      () => toolTip(t.name)))));
+    return [
+      h('div', { class: 'tools-head' },
+        h('p', { class: 'tools-lede' }, `${plural(tools.length, 'tool')} the model can call. Hover over or focus a tool to see what it does and what it takes.`),
+        input),
+      shown.length ? grid : h('div', { class: 'card dev-empty' }, h('p', { class: 'hint', text: tools.length ? `No tools match “${dev.filter}”.` : 'No tools are loaded.' })),
+      h('p', { class: 'hint dev-foot', text: 'Tools are Python files in perseus/tools/. New and changed files load before the next answer.' }),
+    ];
+  }
+
+  $('nav-pipelines').addEventListener('click', () => openDev('pipelines'));
+  $('nav-tools').addEventListener('click', () => openDev('tools'));
+  window.addEventListener('resize', () => { if (tipOwner) hideTip(); });
+
   // ------------------------------------------------------------------ render all
   function renderAll() {
     applyTheme();
-    const inSettings = ui.view === 'settings';
-    $('chat-view').hidden = inSettings;
-    $('settings-view').hidden = !inSettings;
-    renderToggles(); renderChatList(); renderStatus(); renderHeader();
-    if (!inSettings) { renderMessages(); renderComposer(); }
-    renderFeed(); renderSettings();
+    const inChat = ui.view === 'chat';
+    $('chat-view').hidden = !inChat;
+    $('settings-view').hidden = ui.view !== 'settings';
+    $('dev-view').hidden = !isDev();
+    if (!isDev()) hideTip();
+    renderToggles(); renderChatList(); renderNav(); renderStatus(); renderHeader();
+    if (inChat) { renderMessages(); renderComposer(); }
+    renderFeed(); renderSettings(); renderDev();
     relayout();
   }
 
@@ -956,7 +1253,7 @@
       // merge the list, keeping local busy flags for chats this tab is streaming
       ui.list = st.chats.map((c) => ({ ...c, busy: c.busy || !!ui.streams[c.id] }));
       if (ui.activeId && !st.chats.some((c) => c.id === ui.activeId)) ui.activeId = st.chats[0] ? st.chats[0].id : null;
-      renderStatus(); renderChatList();
+      renderStatus(); renderChatList(); renderNav();
       if (ui.view === 'settings') renderSettings();
       if (wasRestarting && !st.restarting) { renderHeader(); renderRing(); }
     } catch (e) {

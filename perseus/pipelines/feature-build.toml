@@ -1,0 +1,84 @@
+# Plan, build, review and document a code change.
+# Format and rules: perseus/pipelines/__init__.py
+
+[pipeline]
+name    = "Feature build"
+summary = "Plan, build, review and document a code change, with an independent review gate."
+status  = "draft"
+
+[[stage]]
+id        = "plan"
+role      = "Planner"
+goal      = "Turn the request into a scoped, testable plan."
+prompt    = '''
+Read the request and pin down what is being asked. List the requirements, the assumptions you had
+to make and anything out of scope. Break the work into small ordered steps, and give every
+requirement an acceptance check someone else could run. Look up library or API details only when the
+plan depends on them, and note the URL.
+'''
+tools     = ["web_search", "fetch_url"]
+inputs    = ["request"]
+outputs   = ["plan"]
+done_when = [
+  "Every requirement has an acceptance check.",
+  "Assumptions and out-of-scope items are listed.",
+  "Steps are ordered and each is small enough to review on its own.",
+]
+thinking  = "medium"
+
+[[stage]]
+id        = "build"
+role      = "Engineer"
+goal      = "Implement the plan as working code."
+prompt    = '''
+Implement the plan step by step. Write complete files or complete functions, not fragments, and
+include tests for the acceptance checks. Keep to the plan: if a step turns out wrong, say so and
+explain the change rather than quietly doing something else.
+'''
+tools     = ["calculator"]
+inputs    = ["request", "plan"]
+outputs   = ["code", "test_notes"]
+done_when = [
+  "Every plan step is implemented or explicitly deferred with a reason.",
+  "Tests cover each acceptance check.",
+  "test_notes says how to run the tests and what they cover.",
+]
+thinking  = "high"
+
+[[stage]]
+id         = "review"
+role       = "Code Reviewer"
+kind       = "review"
+goal       = "Judge the code against the plan, independently of whoever wrote it."
+prompt     = '''
+Review the code as a senior engineer seeing it for the first time. Trace each acceptance check to
+the code and tests that satisfy it. Look for bugs, unhandled edge cases, security problems and
+places where the code drifted from the plan. Be specific: file, function, what is wrong, what to do.
+'''
+tools      = ["fetch_url"]
+inputs     = ["request", "plan", "code", "test_notes"]
+on_revise  = "build"
+max_rounds = 2
+done_when  = [
+  "Every acceptance check in the plan is met by the code and covered by a test.",
+  "No correctness or security bugs remain.",
+  "Anything that differs from the plan is explained.",
+]
+thinking   = "high"
+
+[[stage]]
+id        = "document"
+role      = "Technical Writer"
+goal      = "Write the change up for the people who will use and maintain it."
+prompt    = '''
+Write a short change summary, how to use the feature, and anything a maintainer must know (limits,
+config, follow-ups). Write for someone who hasn't seen the plan or the review.
+'''
+tools     = []
+inputs    = ["request", "plan", "code"]
+outputs   = ["docs"]
+done_when = [
+  "A reader can use the feature from the docs alone.",
+  "Limits and follow-ups are stated.",
+]
+thinking  = "low"

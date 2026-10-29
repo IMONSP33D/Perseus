@@ -102,6 +102,27 @@ class ServerTests(unittest.TestCase):
     def tearDown(self):
         self.srv.stop()
 
+    # ---------------------------------------------------------------- pipelines and tools (WIP)
+    def test_pipelines_and_tools(self):
+        self.assertEqual(self.anon.req("GET", "/api/pipelines")[0], 401)
+        self.assertEqual(self.anon.req("GET", "/api/tools")[0], 401)
+        st, body = self.c.req("GET", "/api/pipelines")
+        self.assertEqual(st, 200)
+        self.assertFalse(body["running"])
+        fb = next(p for p in body["pipelines"] if p["id"] == "feature-build")
+        review = next(s for s in fb["stages"] if s["kind"] == "review")
+        self.assertEqual(review["on_revise"], "build")
+        self.assertIn("<verdict>", review["system_prompt"])
+        plan = fb["stages"][0]
+        self.assertEqual(plan["missing_tools"], ["web_search"])      # this test registry has no web_search
+        st, body = self.c.req("GET", "/api/tools")
+        calc = next(t for t in body["tools"] if t["name"] == "calc")
+        self.assertEqual(calc["description"], "double")
+        self.assertEqual(calc["params"], [{"name": "x", "type": "number", "required": True, "description": ""}])
+        fetch = next(t for t in body["tools"] if t["name"] == "fetch_url")
+        self.assertTrue(fetch["web"])
+        self.assertIn("Code Reviewer", [u["role"] for u in fetch["used_by"]])
+
     # ---------------------------------------------------------------- security
     def test_token_login_sets_cookie_and_redirects(self):
         r, _ = self.anon.req("GET", "/?token=tok-123", raw=True)

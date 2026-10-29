@@ -21,6 +21,7 @@ from perseus.engine.loop import Engine, EngineSettings, TurnOptions
 from perseus.engine.feed import Feed, ToolEvent
 from perseus.engine.session import Recorder
 from perseus.model.thinksplit import RETRACT
+from perseus import pipelines as pipeline_defs
 
 PERSONAS = {
     "engineer": "You are a senior software engineer. Give precise, working answers, show code when it helps, "
@@ -131,6 +132,7 @@ class Dashboard:
         self._ids = itertools.count(1)
         self._lock = threading.RLock()
         self.restarting = False
+        self.pipelines_dir = pipeline_defs.PIPELINES_DIR
 
     # ------------------------------------------------------------------ chats
     def new_chat(self) -> Chat:
@@ -241,6 +243,40 @@ class Dashboard:
                 "creativity": list(CREATIVITY), "length": list(LENGTH), "thinking": list(THINKING),
                 "personas": [*PERSONAS, "custom"], "tools": tool_names, "status": self.status(),
                 "restarting": self.restarting, "chats": self.list_chats()}
+
+    # ------------------------------------------------------------------ development pipelines (WIP)
+    def pipelines(self) -> dict:
+        """Every pipeline file, checked, with each stage's compiled prompt; broken files listed with why."""
+        if self.refresh_tools:
+            self.refresh_tools()
+        names = self.registry.names()
+        found, errors = pipeline_defs.load_all(self.pipelines_dir)
+        return {"pipelines": [pipeline_defs.describe(p, names) for p in found],
+                "errors": [{"file": f, "error": e} for f, e in errors.items()],
+                "folder": "perseus/pipelines", "running": False}
+
+    def tools(self) -> dict:
+        """The tools the model can call, with what each takes and which pipeline stages use it."""
+        if self.refresh_tools:
+            self.refresh_tools()
+        found, _ = pipeline_defs.load_all(self.pipelines_dir)
+        used: dict[str, list[dict]] = {}
+        for pl in found:
+            for st in pl.stages:
+                for t in st.tools:
+                    used.setdefault(t, []).append({"pipeline": pl.name, "stage": st.id, "role": st.role})
+        out = []
+        for name in self.registry.names():
+            t = self.registry.get(name)
+            props = (t.parameters or {}).get("properties") or {}
+            required = set((t.parameters or {}).get("required") or [])
+            params = [{"name": k, "type": v.get("type", "any") if isinstance(v, dict) else "any",
+                       "required": k in required,
+                       "description": (v.get("description") or "") if isinstance(v, dict) else ""}
+                      for k, v in props.items()]
+            out.append({"name": name, "description": t.description, "params": params, "web": bool(t.lookup),
+                        "timeout_s": t.timeout_s, "source": t.source, "used_by": used.get(name, [])})
+        return {"tools": out}
 
     # ------------------------------------------------------------------ turns
     def turn_options(self) -> TurnOptions:

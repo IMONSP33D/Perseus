@@ -283,6 +283,10 @@ class _Handler(BaseHTTPRequestHandler):
         if route == ("DELETE", "chats"):
             d.delete_all()
             return self._json(200, {"chats": []})
+        if route == ("GET", "pipelines"):
+            return self._json(200, d.pipelines())
+        if route == ("GET", "tools"):
+            return self._json(200, d.tools())
         if route == ("GET", "export"):
             body = json.dumps(d.export_all(), ensure_ascii=False, indent=1).encode()
             name = time.strftime("perseus-chats-%Y%m%d-%H%M%S.json")
