@@ -346,7 +346,7 @@ Every rule is re-applied to every redirect hop.
 
 1. **Walls first.** Installs the socket guard, builds the gateway and runs the boot self-test (21 refusal checks, about a second). Any failure stops Perseus.
 2. **Weights.** Waits for the download that preflight started, with a live panel: per-file bars, speed, ETA and free disk.
-3. **Processes.** Starts SearXNG, vLLM and (if configured) the sandbox broker under a supervisor that restarts them on a crash. The broker checks the sandbox's toolchains and network while the model loads.
+3. **Processes.** Starts SearXNG, vLLM and (if configured) the sandbox broker under a supervisor that restarts them on a crash. When vLLM's error names a setting that would work (for example "lower max_num_seqs to at most 637" on hybrid Mamba models), the next attempt uses it; the same error twice from the same command stops at once instead of reloading the weights again. The broker checks the sandbox's toolchains and network while the model loads.
 4. **Proof.** Times the first token, then sends one test tool call. It must come back parsed, or Perseus stops and names the parser.
 5. **Dashboard.** Checks the dashboard the way a browser would, checks that the box's SSH server allows tunnels, and prints the sign-in link and SSH command.
 
@@ -448,7 +448,7 @@ perseus/                         the checkout (this repo)
 │   ├── supervisor.py            keeps vLLM, SearXNG and the sandbox broker running
 │   └── console.py               terminal front end (--console)
 ├── docs/                        README images
-└── tests/                       264 tests; no GPU or network needed
+└── tests/                       270 tests; no GPU or network needed
 ```
 
 ```
@@ -465,7 +465,7 @@ The one large thing left in the checkout is the Python environment (`.venv`, abo
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -t .      # 264 tests, about 45 s; no GPU, network or extra packages
+python3 -m unittest discover -s tests -t .      # 270 tests, about 45 s; no GPU, network or extra packages
 ```
 
 The sandbox conformance suite runs against a local, namespace-isolated runner when `unshare -rn` works (most Linux boxes; skipped elsewhere). To run it against E2B too, which costs a few cents:

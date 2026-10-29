@@ -70,6 +70,70 @@ class SupervisorTests(unittest.TestCase):
             sup.stop_all()
 
 
+# A child that fails like vLLM on a hybrid model unless started with a small enough --max-num-seqs.
+SEQS_CHILD = r"""
+import sys, time
+n = int(sys.argv[sys.argv.index("--max-num-seqs") + 1]) if "--max-num-seqs" in sys.argv else 1024
+if n > 637:
+    print("(EngineCore pid=1) ERROR 10-29 15:11:44 [core.py:1510] ValueError: max_num_seqs (%d) exceeds available "
+          "Mamba cache blocks (637). Please lower max_num_seqs to at most 637 or increase "
+          "gpu_memory_utilization." % n, flush=True)
+    sys.exit(1)
+print("serving", flush=True)
+time.sleep(60)
+"""
+
+
+class Remedies(unittest.TestCase):
+    def _sup(self, tmp, cmd_tail, remedy=None, max_restarts=3):
+        script = tmp / "child.py"
+        script.write_text(SEQS_CHILD)
+        log = tmp / "svc.log"
+        up = lambda: "serving" in (log.read_text() if log.exists() else "")
+        sup = Supervisor(backoff=(0.05,), poll_s=0.05)
+        sup.add(ProcessSpec("svc", [sys.executable, str(script), *cmd_tail], dict(os.environ), log, up,
+                            ready_timeout_s=20, max_restarts=max_restarts, remedy=remedy))
+        return sup
+
+    def wait(self, sup, *states):
+        deadline = time.time() + 15
+        while sup.procs["svc"].state not in states and time.time() < deadline:
+            time.sleep(0.05)
+        if sup.procs["svc"].state == "restarting":
+            pass
+        return sup.procs["svc"]
+
+    def test_remedy_fixes_the_command_and_it_comes_up(self):
+        from perseus.model.launch import remedy
+        tmp, r = Path(tempfile.mkdtemp()), {"vllm": {}}
+        sup = self._sup(tmp, ["--max-num-seqs", "1024"], remedy=lambda log, cmd: remedy(log, cmd, r))
+        try:
+            sup.start("svc")
+            deadline = time.time() + 15
+            while time.time() < deadline and "serving" not in (tmp / "svc.log").read_text():
+                time.sleep(0.05)
+            m = sup.wait_ready("svc")
+            self.assertEqual(m.state, "up")
+            self.assertEqual(m.restarts, 1)                       # one wasted attempt, not three
+            self.assertEqual(m.remedies, ["--max-num-seqs 637"])
+            self.assertEqual(m.spec.cmd[-2:], ["--max-num-seqs", "637"])
+            self.assertEqual(r["vllm"]["max_num_seqs"], 637)      # a later settings restart keeps it
+        finally:
+            sup.stop_all()
+
+    def test_same_error_twice_with_the_same_command_stops_retrying(self):
+        tmp = Path(tempfile.mkdtemp())
+        sup = self._sup(tmp, ["--max-num-seqs", "1024"], max_restarts=5)   # no remedy
+        try:
+            sup.start("svc")
+            m = self.wait(sup, "failed")
+            self.assertEqual(m.state, "failed")
+            self.assertEqual(m.restarts, 1)                       # not 5
+            self.assertIn("same error twice", m.reason)
+        finally:
+            sup.stop_all()
+
+
 class Restart(unittest.TestCase):
     def test_deliberate_restart_is_not_a_crash(self):
         tmp = Path(tempfile.mkdtemp())

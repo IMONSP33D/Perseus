@@ -7,6 +7,7 @@ vLLM runs on 127.0.0.1 with a random per-boot API key in its environment
 from __future__ import annotations
 
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -17,6 +18,14 @@ from perseus.model.client import LLMClient, LLMError
 SECRET_ENV = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_API_TOKEN")
 OOM_MARKERS = ("CUDA out of memory", "OutOfMemoryError", "No available memory for the cache blocks",
                "insufficient memory", "larger than the available KV cache", "out of memory")
+
+# Requests vLLM runs at once. Perseus serves one person, and vLLM queues anything beyond this rather
+# than refusing it. vLLM's own default (up to 1024 on big GPUs) reserves room for traffic that never
+# comes, and on hybrid models (Mamba / linear-attention layers, e.g. Qwen3.8) every one of those slots
+# needs a state block, so a long context can leave too few and vLLM refuses to start.
+MAX_NUM_SEQS = 16
+_SEQS_LIMIT = re.compile(r"lower max_num_seqs to at most (\d+)|max_num_seqs \((\d+)\) exceeds available "
+                         r"\w+ cache blocks \((\d+)\)")
 
 TOOL_TEST = {
     "type": "function",
@@ -41,6 +50,7 @@ def build_vllm_cmd(r: dict, port: int, fast_start: bool = False) -> list[str]:
            "--host", "127.0.0.1", "--port", str(port),
            "--tensor-parallel-size", str(v["tensor_parallel_size"]),
            "--max-model-len", str(v["max_model_len"]),
+           "--max-num-seqs", str(int(v.get("max_num_seqs") or MAX_NUM_SEQS)),
            "--gpu-memory-utilization", str(v["gpu_memory_utilization"]),
            "--dtype", v["dtype"],
            "--generation-config", "auto",
@@ -85,8 +95,44 @@ def vllm_env(api_key: str, run_dir: Path | None = None) -> dict[str, str]:
     return env
 
 
+def seqs_limit(log_text: str) -> int | None:
+    """The max_num_seqs vLLM says would fit, from its error, if it named one."""
+    for m in _SEQS_LIMIT.finditer(log_text):
+        n = m.group(1) or m.group(3)
+        if n is not None:
+            return int(n)
+    return None
+
+
+def remedy(log_text: str, cmd: list[str], r: dict) -> tuple[list[str], str] | None:
+    """A corrected command when vLLM's error says exactly what would work; None otherwise.
+
+    Also records the value in `r`, so a later restart (new settings) keeps it.
+    """
+    limit = seqs_limit(log_text)
+    if not limit or limit < 1:
+        return None
+    new = list(cmd)
+    if "--max-num-seqs" in new:
+        i = new.index("--max-num-seqs") + 1
+        if i < len(new) and new[i].isdigit() and int(new[i]) <= limit:
+            return None                      # already at or under the limit: something else is wrong
+        new[i:i + 1] = [str(limit)]
+    else:
+        new += ["--max-num-seqs", str(limit)]
+    r.setdefault("vllm", {})["max_num_seqs"] = limit
+    return new, f"--max-num-seqs {limit}"
+
+
 def explain_crash(log_text: str, r: dict) -> list[str]:
     low = log_text.lower()
+    limit = seqs_limit(log_text)
+    if limit is not None:
+        if limit >= 1:
+            return [f"vLLM had room for only {limit} parallel requests' state on this hybrid model",
+                    "Perseus retries with that limit automatically; one user needs far fewer"]
+        return [f"no room for this hybrid model's state cache at context {r['vllm']['max_model_len']:,}",
+                "set [model] max_context lower in perseus.toml, then re-run bash preflight.sh --check"]
     if "no available memory for the cache blocks" in low or "larger than the available kv cache memory" in low \
             or "max seq len" in low and "kv cache" in low:
         return [f"the weights fit but there is no room left for a {r['vllm']['max_model_len']:,}-token KV cache",

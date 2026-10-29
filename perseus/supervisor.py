@@ -4,6 +4,9 @@
   * while restarting, its state is "restarting" (the dashboard shows "Model restarting")
   * an out-of-memory crash is reported as such, with a suggested fix
   * when restarts run out the process is "failed" and the last 40 log lines are kept
+  * a spec's `remedy` can change the command before the next attempt, when the crash log says
+    what would work (vLLM: "lower max_num_seqs to at most 637")
+  * the same error twice in a row from the same command fails at once: retrying can't help
 Each process runs in its own process group, so stopping it stops its workers too.
 """
 
@@ -36,6 +39,7 @@ class ProcessSpec:
     ready_timeout_s: float = 3600
     max_restarts: int = 3
     explain: Callable[[str], list[str]] | None = None    # log text -> hints
+    remedy: Callable[[str, list[str]], tuple[list[str], str] | None] | None = None  # (log, cmd) -> (new cmd, note)
 
 
 @dataclass
@@ -50,6 +54,9 @@ class Managed:
     tail: str = ""
     started_at: float = 0.0
     intentional: bool = False       # a restart someone asked for: not a crash
+    last_cause: str = ""            # the previous crash's root cause and command, to spot a repeat
+    last_cmd: list[str] = field(default_factory=list)
+    remedies: list[str] = field(default_factory=list)   # what was changed automatically, in order
 
 
 class Supervisor:
@@ -161,6 +168,16 @@ class Supervisor:
             m.hints = explain_crash(attempt, m.spec)
             m.reason = m.hints[0] if m.hints else (f"exited with code {code}: {cause}" if cause
                                                    else f"exited with code {code}")
+            fix = self._remedy(m, attempt)
+            repeated = bool(cause) and cause == m.last_cause and m.spec.cmd == m.last_cmd
+            m.last_cause, m.last_cmd = cause, list(m.spec.cmd)
+            if fix:
+                m.spec.cmd, note = fix
+                m.remedies.append(note)
+                m.reason = f"{m.reason}; retrying with {note}"
+            elif repeated:
+                self._fail(m, f"{m.reason}; the same error twice in a row, so not retrying")
+                return
             if m.restarts >= m.spec.max_restarts:
                 self._fail(m, f"{m.reason}; gave up after {m.restarts} restart(s)")
                 return
@@ -170,6 +187,15 @@ class Supervisor:
             if self._stop.wait(delay):
                 return
             self._spawn(m, "restarting")
+
+    def _remedy(self, m: Managed, log_text: str) -> tuple[list[str], str] | None:
+        if not m.spec.remedy:
+            return None
+        try:
+            fix = m.spec.remedy(log_text, list(m.spec.cmd))
+        except Exception:
+            return None
+        return fix if fix and fix[0] != m.spec.cmd else None
 
     def _healthy(self, m: Managed) -> bool:
         try:
