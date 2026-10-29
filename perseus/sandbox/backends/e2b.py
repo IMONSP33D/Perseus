@@ -16,6 +16,7 @@ import shlex
 import time
 
 from perseus.sandbox.backends import Capabilities, ExecResult, SandboxError, SessionSpec
+from perseus.sandbox.network import PACKAGE_HOSTS
 
 WORKDIR = "/home/user/job"
 KILL_GRACE_S = 2
@@ -106,10 +107,17 @@ class E2BBackend:
     def open(self, spec: SessionSpec) -> E2BSession:
         from e2b import Sandbox
 
+        net: dict = {}
+        if spec.network == "full":
+            net["allow_internet_access"] = True
+        elif spec.network == "packages":
+            # only the registries' host names; everything else refused by E2B's firewall
+            net["network"] = {"allow_out": list(PACKAGE_HOSTS), "deny_out": ["0.0.0.0/0"]}
+        else:
+            net["allow_internet_access"] = False
         try:
             sbx = Sandbox.create(template=self.template, timeout=min(int(spec.lifetime_s), 3600),
-                                 allow_internet_access=bool(spec.internet), api_key=self.key,
-                                 metadata={"app": "perseus"})
+                                 api_key=self.key, metadata={"app": "perseus"}, **net)
         except Exception as e:
             raise _translate(e)
         session = E2BSession(sbx)

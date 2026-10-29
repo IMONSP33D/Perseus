@@ -31,11 +31,7 @@ class SandboxClient:
         self.request_timeout_s = request_timeout_s
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never via a proxy
         self.languages: list[str] = []
-        self.internet = False
-
-    @property
-    def reaches_web(self) -> bool:
-        return self.internet
+        self.network = "none"
 
     def _call(self, method: str, path: str, body: dict | None = None, timeout: float = 10.0) -> tuple[int, dict]:
         data = json.dumps(body).encode() if body is not None else None
@@ -66,7 +62,7 @@ class SandboxClient:
             err = data.get("error") or {}
             return {"error": {"code": err.get("code", "unavailable"), "message": err.get("message", f"HTTP {status}")}}
         self.languages = list(data.get("languages") or [])
-        self.internet = bool(data.get("internet"))
+        self.network = data.get("network") or "none"
         limits = data.get("limits") or {}
         if limits:
             self.request_timeout_s = limits.get("build_timeout_s", 120) + limits.get("run_timeout_s", 30) + 90

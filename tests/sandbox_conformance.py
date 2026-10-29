@@ -34,7 +34,7 @@ HOST_SECRET = "PERSEUS_CONFORMANCE_HOST_SECRET"
 class Conformance:
     """Mixin for unittest.TestCase. Subclasses define make_backend()."""
 
-    settings = RunSettings(run_timeout_s=10, build_timeout_s=120, max_output_kb=64)
+    settings = RunSettings(network="none", run_timeout_s=10, build_timeout_s=120, max_output_kb=64)
 
     def make_backend(self):
         raise NotImplementedError
@@ -98,10 +98,12 @@ class Conformance:
         self.assertLess(time.monotonic() - t0, 60)
 
     def test_network_is_blocked(self):
-        code = ("import socket\ntry:\n    socket.create_connection(('1.1.1.1', 443), timeout=4)\n"
-                "    print('CONNECTED')\nexcept OSError:\n    print('BLOCKED')")
-        r = self.run_("python", code, run_timeout_s=10)
-        self.assertEqual(r["stdout"].strip(), "BLOCKED", r)
+        # a real HTTPS request: a firewall that filters by TLS host name can let a bare TCP connect through
+        code = ("import urllib.request\nfor u in ('https://example.com/', 'https://1.1.1.1/'):\n"
+                "    try:\n        urllib.request.urlopen(u, timeout=6); print('OPEN')\n"
+                "    except Exception:\n        print('BLOCKED')")
+        r = self.run_("python", code, run_timeout_s=20)
+        self.assertEqual(r["stdout"].split(), ["BLOCKED", "BLOCKED"], r)
 
     def test_host_environment_is_not_visible(self):
         os.environ[HOST_SECRET] = "should-never-be-seen"
@@ -117,6 +119,17 @@ class Conformance:
         self.run_("bash", "echo left-behind > marker.txt")
         r = self.run_("bash", "cat marker.txt 2>/dev/null || echo clean")
         self.assertEqual(r["stdout"].strip(), "clean")
+
+    def test_packages_level_reaches_registries_and_nothing_else(self):
+        if "packages" not in self.backend.capabilities().network_levels:
+            self.skipTest("this backend can't enforce network = packages")
+        code = ("import urllib.request\nfor u in ('https://pypi.org/simple/', 'https://example.com/'):\n"
+                "    try:\n        urllib.request.urlopen(u, timeout=8); print(u, 'OPEN')\n"
+                "    except Exception as e:\n        print(u, 'BLOCKED')")
+        r = self.run_("python", code, network="packages", run_timeout_s=30)
+        self.assertIn("https://pypi.org/simple/ OPEN", r["stdout"], r)
+        self.assertIn("https://example.com/ BLOCKED", r["stdout"], r)
+
 
     def test_huge_output_is_capped_keeping_head_and_tail(self):
         r = self.run_("python", "print('FIRST')\nprint('x' * 2_000_000)\nprint('LAST')", max_output_kb=16)

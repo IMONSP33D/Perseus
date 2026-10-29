@@ -131,6 +131,11 @@ def _languages(v: list) -> str | None:
     return f"unknown language(s) {', '.join(map(str, bad))} (known: {', '.join(LANGUAGES)})" if bad else None
 
 
+# keys that changed: say what replaced them instead of just "unknown key"
+RENAMED = {("code_runner", "internet"): 'replaced by network = "none", "packages" or "full" (internet = true '
+                                        'is "full"; the default "packages" allows package installs only)',
+           ("code_runner", "key_file"): "replaced by [secrets] code_runner_api_key"}
+
 SCHEMA: dict[str, dict[str, Key]] = {
     "model": {
         "id": Key((str,), required=True, check=_repo_id),
@@ -175,7 +180,7 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "enabled": Key((bool,), True),
         "backend": Key((str,), "e2b", choices=("e2b",)),
         "e2b_template": Key((str,), ""),
-        "internet": Key((bool,), False),
+        "network": Key((str,), "packages", choices=("none", "packages", "full")),
         "languages": Key((list,), [], check=_languages),
         "build_timeout_s": Key((int,), 120, check=_range(5, 180)),
         "run_timeout_s": Key((int,), 30, check=_range(1, 120)),
@@ -275,7 +280,9 @@ def validate(raw: dict, *, text: str = "", name: str = "perseus.toml",
             problems.append(f"{where(section)}: must be a [section], not a value")
         else:
             for key in value:
-                if key not in SCHEMA[section]:
+                if (section, key) in RENAMED:
+                    problems.append(f"{where(section, key)}: {RENAMED[(section, key)]}")
+                elif key not in SCHEMA[section]:
                     hint = _closest(key, SCHEMA[section])
                     problems.append(f"{where(section, key)}: unknown key" + (f" (did you mean {hint!r}?)" if hint else ""))
 

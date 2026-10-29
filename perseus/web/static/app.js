@@ -448,6 +448,7 @@
     if (ev.status === 'running') return 'running…';
     const parts = [];
     if (ev.lookup) parts.push('lookup ' + ev.lookup);
+    if (ev.outcome) parts.push(ev.outcome);
     if (ev.http_status) parts.push(String(ev.http_status));
     if (ev.bytes) parts.push(kb(ev.bytes));
     if (ev.duration_ms != null) parts.push(secs(ev.duration_ms));

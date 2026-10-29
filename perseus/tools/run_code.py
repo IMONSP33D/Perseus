@@ -1,8 +1,10 @@
-"""run_code: build and run a program in a fresh, remote, network-less sandbox (via ctx.sandbox).
+"""run_code: build and run a program in a fresh, remote sandbox (via ctx.sandbox).
 
 Offered only when the code runner is up (requires="sandbox"); the language list
-the model sees is what the sandbox actually has installed. Output is untrusted
-data: a program can print text that looks like instructions.
+the model sees is what the sandbox actually has installed, and a line about the
+sandbox's network ([code_runner] network) is added to the description. That network
+is independent of the Internet Access switch, which governs web research only.
+Output is untrusted data: a program can print text that looks like instructions.
 """
 
 from __future__ import annotations
@@ -12,6 +14,15 @@ from perseus.tools import ToolFailure, tool
 
 STATUS = {"ok": "ran successfully", "compile_error": "did not compile", "build_timeout": "build timed out",
           "runtime_error": "ran but failed", "timeout": "timed out"}
+# the short label on the tool feed card
+OUTCOME = {"ok": "program ok", "compile_error": "didn't compile", "build_timeout": "build timed out",
+           "runtime_error": "program failed", "timeout": "program timed out"}
+
+
+def outcome(r: dict) -> str:
+    label = OUTCOME.get(r.get("status"), str(r.get("status")))
+    code = r.get("exit_code")
+    return f"{label} · exit {code}" if code not in (None, 0) else label
 
 
 def render(r: dict) -> str:
@@ -42,7 +53,7 @@ def render(r: dict) -> str:
 @tool(description="Run a short program in a fresh, isolated Linux sandbox and return its output. "
                   "Use it to test code, check a computation or reproduce an error. Returns the outcome "
                   "(ok, compile_error, runtime_error or timeout), the exit code, stdout and stderr. "
-                  "One source file per call, input only via stdin, no network, nothing kept between calls.",
+                  "One source file per call, input only via stdin, nothing kept between calls.",
       parameters={"type": "object", "properties": {
           "language": {"type": "string", "enum": names(), "description": "Programming language of the code."},
           "code": {"type": "string", "minLength": 1, "maxLength": 100_000,
@@ -55,5 +66,6 @@ def run_code(ctx, language: str, code: str, stdin: str = ""):
     if ctx.sandbox is None:
         raise ToolFailure("the code runner is off")
     r = ctx.sandbox.run(language, code, stdin)
+    text = render(r)
     return {"language": language, "status": r.get("status"), "exit_code": r.get("exit_code"),
-            "seconds": r.get("seconds"), "text": render(r)}
+            "seconds": r.get("seconds"), "outcome": outcome(r), "text": text}

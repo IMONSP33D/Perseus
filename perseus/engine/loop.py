@@ -399,6 +399,10 @@ class Engine:
         meta: dict = {}
         if isinstance(result, dict):
             meta = {k: v for k, v in (("url", result.get("url")), ("http_status", result.get("status"))) if v}
+            if not isinstance(meta.get("http_status"), int) or isinstance(meta.get("http_status"), bool):
+                meta.pop("http_status", None)          # only real HTTP codes go in that slot
+            if isinstance(result.get("outcome"), str):
+                meta["outcome"] = result["outcome"][:60]
             text = result.get("text")
             if isinstance(text, str):
                 meta["bytes"] = len(text.encode())

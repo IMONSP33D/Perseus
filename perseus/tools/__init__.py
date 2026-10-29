@@ -79,6 +79,7 @@ class Capability:
     name: str
     reaches_web: bool = False    # tools using it are web tools: gated by the Internet Access switch
     enums: dict[str, list[str]] = field(default_factory=dict)   # narrows these enum parameters, e.g. languages
+    note: str = ""               # appended to the description of tools using it (e.g. the sandbox's network)
 
 
 class Registry:
@@ -98,8 +99,9 @@ class Registry:
             del self._tools[name]
 
     # capabilities ------------------------------------------------------------
-    def provide(self, name: str, *, reaches_web: bool = False, enums: dict[str, list[str]] | None = None) -> None:
-        self._caps[name] = Capability(name, reaches_web, dict(enums or {}))
+    def provide(self, name: str, *, reaches_web: bool = False, enums: dict[str, list[str]] | None = None,
+                note: str = "") -> None:
+        self._caps[name] = Capability(name, reaches_web, dict(enums or {}), note)
 
     def withdraw(self, name: str) -> None:
         self._caps.pop(name, None)
@@ -141,9 +143,18 @@ class Registry:
     def loaded(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
+    def description(self, t: Tool) -> str:
+        cap = self._caps.get(t.requires) if t.requires else None
+        return f"{t.description} {cap.note}" if cap and cap.note else t.description
+
     def specs(self, only: set[str] | None = None) -> list[dict]:
-        return [t.spec(self.parameters(t)) for n, t in sorted(self._tools.items())
-                if self.available(t) and (only is None or n in only)]
+        out = []
+        for n, t in sorted(self._tools.items()):
+            if self.available(t) and (only is None or n in only):
+                spec = t.spec(self.parameters(t))
+                spec["function"]["description"] = self.description(t)
+                out.append(spec)
+        return out
 
     def validate(self, name: str, args: Any) -> tuple[Tool | None, dict, list[str]]:
         """(tool, args with defaults, problems). A non-empty problem list means: refuse."""

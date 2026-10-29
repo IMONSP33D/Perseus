@@ -50,7 +50,7 @@ class ExecResult:
 
 @dataclass
 class SessionSpec:
-    internet: bool = False      # outbound network from inside the sandbox
+    network: str = "none"       # "none", "packages" or "full" (perseus.sandbox.network)
     lifetime_s: int = 300       # hard upper bound; the session is destroyed after this even if never closed
 
 
@@ -58,6 +58,7 @@ class SessionSpec:
 class Capabilities:
     os: str = "linux"
     controls_network: bool = True       # can actually switch the sandbox's internet off
+    network_levels: tuple = ("none", "packages", "full")   # the levels this backend can enforce
     max_lifetime_s: int = 3600
     extras: dict = field(default_factory=dict)
 

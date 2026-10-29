@@ -34,9 +34,9 @@ def namespaces_work() -> bool:
 
 
 class LocalSession:
-    def __init__(self, internet: bool):
+    def __init__(self, network: str):
         self.dir = Path(tempfile.mkdtemp(prefix="perseus-job-"))
-        self.internet = internet
+        self.internet = network == "full"     # no host allowlist here: "packages" is refused up front
         # a clean environment: nothing from the host process (keys, tokens, proxies) leaks in
         self.env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.dir), "LANG": "C.UTF-8",
                     "TMPDIR": str(self.dir)}
@@ -86,7 +86,10 @@ class LocalUnsafeBackend:
             raise SandboxError("config", "local_unsafe needs `unshare -rn` (user and network namespaces)")
 
     def capabilities(self) -> Capabilities:
-        return Capabilities(os="linux", controls_network=True, max_lifetime_s=3600, extras={"unsafe": True})
+        return Capabilities(os="linux", controls_network=True, max_lifetime_s=3600, network_levels=("none", "full"),
+                            extras={"unsafe": True})
 
     def open(self, spec: SessionSpec) -> LocalSession:
-        return LocalSession(spec.internet)
+        if spec.network not in ("none", "full"):
+            raise SandboxError("config", f"local_unsafe can't enforce network = {spec.network!r} (none or full only)")
+        return LocalSession(spec.network)
