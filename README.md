@@ -187,6 +187,8 @@ Chats live in memory on the box and are gone at shutdown. **Export all chats** i
 
 vLLM's reasoning parser splits thinking from the answer, but it misses some cases: a second thinking block mid-answer, a closing tag with no opening one, or a template that ignores `enable_thinking: false`. Perseus catches these as the answer streams and moves the text back into the thinking panel, so the answer and the saved chat history stay clean. Think tags inside code blocks are left alone.
 
+Many open models also write their plan as plain text right before a tool call ("The user wants X. Let me search for it."). That text belongs to the step, not the answer: once the step turns out to call a tool, Perseus moves it into the thinking panel, and only the final step's text is the answer. The model still sees it in the conversation history.
+
 ## Development pipelines (preview)
 
 <p align="center">
@@ -446,7 +448,7 @@ perseus/                         the checkout (this repo)
 │   ├── supervisor.py            keeps vLLM, SearXNG and the sandbox broker running
 │   └── console.py               terminal front end (--console)
 ├── docs/                        README images
-└── tests/                       261 tests; no GPU or network needed
+└── tests/                       264 tests; no GPU or network needed
 ```
 
 ```
@@ -463,7 +465,7 @@ The one large thing left in the checkout is the Python environment (`.venv`, abo
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -t .      # 261 tests, about 45 s; no GPU, network or extra packages
+python3 -m unittest discover -s tests -t .      # 264 tests, about 45 s; no GPU, network or extra packages
 ```
 
 The sandbox conformance suite runs against a local, namespace-isolated runner when `unshare -rn` works (most Linux boxes; skipped elsewhere). To run it against E2B too, which costs a few cents:
