@@ -37,6 +37,8 @@ from perseus.model.launch import (build_vllm_cmd, explain_crash, gpu_memory_used
                                   vllm_env, vllm_healthy)
 from perseus.safety import selftest, socketguard
 from perseus.safety.gateway import Gateway
+from perseus.sandbox import launch as sandbox_launch
+from perseus.sandbox.client import SandboxClient
 from perseus.search import SearchClient
 from perseus.search import command as searxng_command
 from perseus.supervisor import ProcessSpec, Supervisor
@@ -217,12 +219,17 @@ def main(argv: list[str] | None = None) -> None:
     run = RunFiles(paths)
     run.pid("perseus", os.getpid())
     run.secret("vllm.key", key)
+    # code runner: decided before anything inherits this process's environment (moves E2B_API_KEY out of it)
+    sandbox_plan = sandbox_launch.plan(r.get("code_runner", {}), os.environ)
+    sandbox_port, sandbox_token = free_port(), secrets.token_urlsafe(32)
+    sandbox_secrets = (sandbox_token,) + tuple(v for k, v in sandbox_plan.env.items() if k == sandbox_launch.KEY_ENV)
 
     # 1. the walls first ------------------------------------------------------
     gateway = Gateway(timeout_s=limits.get("fetch_timeout_s", 15), max_response_kb=limits.get("max_response_kb", 2048),
-                      exact_secrets=(key,), log_path=logs / "gateway.jsonl")
+                      exact_secrets=(key,) + sandbox_secrets, log_path=logs / "gateway.jsonl")
     refused: list[str] = []
-    socketguard.install({vllm_port, search_port}, on_refuse=refused.append)
+    loopback = {vllm_port, search_port} | ({sandbox_port} if sandbox_plan.start else set())
+    socketguard.install(loopback, on_refuse=refused.append)
     loader = default_loader()
     for change in loader.refresh():
         if not change.startswith("loaded "):
@@ -296,12 +303,20 @@ def main(argv: list[str] | None = None) -> None:
     if have_searxng:
         sup.add(ProcessSpec("SearXNG", sx_cmd, {**os.environ, **sx_env}, logs / "searxng.log", search.healthy,
                             cwd=paths.searxng, ready_timeout_s=90, max_restarts=max_restarts))
+    sandbox = SandboxClient(sandbox_port, sandbox_token) if sandbox_plan.start else None
+    if sandbox is not None:
+        sup.add(ProcessSpec("Sandbox", sandbox_launch.broker_command(sandbox_port),
+                            sandbox_launch.broker_env(os.environ, sandbox_plan, sandbox_token),
+                            logs / "sandbox.log", sandbox.healthy, cwd=Path(__file__).resolve().parents[1],
+                            ready_timeout_s=180, max_restarts=max_restarts))
     sup.add(ProcessSpec("vLLM", build_vllm_cmd(r, vllm_port, args.fast_start), vllm_env(key, paths.run),
                         logs / "vllm.log", lambda: vllm_healthy(vllm_port, key), cwd=paths.run,
                         max_restarts=max_restarts, explain=lambda log: explain_crash(log, r)))
     try:
         if have_searxng:
             sup.start("SearXNG")
+        if sandbox is not None:
+            sup.start("Sandbox")   # probes its toolchains while the model loads
         sup.start("vLLM")
         say(f"  starting vLLM (log: {logs / 'vllm.log'})")
         t_load = time.monotonic()
@@ -318,6 +333,15 @@ def main(argv: list[str] | None = None) -> None:
             say("  ✓ SearXNG up" if sx.state == "up" else f"  ! SearXNG not up ({sx.reason}); web_search unavailable")
         else:
             say("  ! SearXNG isn't installed (run bash preflight.sh); web_search unavailable")
+        if sandbox is not None:
+            sb = sup.wait_ready("Sandbox")
+            ok, detail = sandbox_launch.connect(sandbox, registry) if sb.state == "up" else (False, f"off ({sb.reason})")
+            say(f"  ✓ code runner: {detail}" if ok else f"  ! code runner {detail}; run_code unavailable "
+                                                       f"(log: {logs / 'sandbox.log'})")
+            if not ok:
+                sandbox = None
+        else:
+            say(f"  · code runner: {sandbox_plan.reason}")
 
         # 4. first token and the parse check -----------------------------------
         llm = LLMClient(vllm_port, key, model)
@@ -338,7 +362,8 @@ def main(argv: list[str] | None = None) -> None:
         prof = r["profile"]
         depths = {k: int(prof.get(f"lookups_{k}", v)) for k, v in DEPTHS.items()}
         recorder = Recorder(meta={"model": model, "hardware": r["hardware"]["summary"], "vllm": r["vllm"]})
-        engine = Engine(llm, registry, ToolContext(gateway=gateway, search=search, limits=limits), Feed(),
+        engine = Engine(llm, registry, ToolContext(gateway=gateway, search=search, limits=limits, sandbox=sandbox),
+                        Feed(),
                         EngineSettings(lookup_limit=depths[limits.get("research_depth", "standard")],
                                        tool_result_tokens=prof.get("tool_result_tokens") or None,
                                        max_context=int(r["vllm"]["max_model_len"]), small_gpu=bool(prof["small_gpu"])),
@@ -476,6 +501,7 @@ def run_replay(path: Path) -> None:
 
     def make(llm, override):
         reg = load_builtin()
+        reg.provide("sandbox")   # recorded run_code results replay from the file; nothing runs
         return Engine(llm, reg, ToolContext(), Feed(), EngineSettings(), tool_override=override)
 
     rows = replay(path, make)

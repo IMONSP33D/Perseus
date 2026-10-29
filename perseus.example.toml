@@ -41,3 +41,17 @@ research_depth = "standard"  # quick | standard | deep (shown in the dashboard)
 fetch_timeout_s = 15
 max_response_kb = 2048
 warn_download_minutes = 20
+
+[code_runner]                # the run_code tool: builds and runs code in a remote, disposable sandbox
+enabled = true               # on by default; stays off (and hidden from the model) until a key is set
+backend = "e2b"              # e2b (more backends can plug in; see perseus/sandbox/backends/)
+key_file = ""                # absolute path to a file holding your E2B API key (mode 600); read only by
+                             # the sandbox broker, never by perseus.py. Or export E2B_API_KEY instead.
+e2b_template = ""            # E2B template with the toolchains (setup/sandbox/); "" = E2B default
+                             # (Python, Node.js and Bash only; C, C++, Rust, Go and Java need the template)
+internet = false             # true lets sandboxed programs reach the internet (then the Internet
+                             # Access switch also turns run_code off)
+languages = []               # [] = every language the sandbox has; or a subset, e.g. ["python", "rust"]
+build_timeout_s = 120        # compile step limit (5-180)
+run_timeout_s = 30           # program run limit (1-120)
+max_output_kb = 64           # stdout + stderr kept per run (head and tail)

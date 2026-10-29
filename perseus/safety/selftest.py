@@ -119,8 +119,8 @@ def run(gateway: Gateway, ports: dict[str, int], registry: Registry | None = Non
     sources = set()
     if registry:
         import sys
-        for n in registry.names():
-            mod = sys.modules.get(registry.get(n).source)
+        for n in registry.all_names():   # tools whose capability is off are still checked
+            mod = sys.modules.get(registry.loaded(n).source)
             if mod is not None and getattr(mod, "__file__", None):
                 sources.add(Path(mod.__file__))
     for d in tool_dirs:

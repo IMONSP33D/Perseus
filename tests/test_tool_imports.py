@@ -19,9 +19,11 @@ class ToolFolder(unittest.TestCase):
 
     def test_one_file_per_tool(self):
         reg = load_builtin()
-        for name in reg.names():
-            self.assertEqual(reg.get(name).source, f"perseus.tools.{name}", name)
-        self.assertEqual(sorted(reg.names()), ["calculator", "current_time", "fetch_url", "web_search"])
+        for name in reg.all_names():
+            self.assertEqual(reg.loaded(name).source, f"perseus.tools.{name}", name)
+        self.assertEqual(reg.all_names(), ["calculator", "current_time", "fetch_url", "run_code", "web_search"])
+        # run_code needs the code sandbox, so it's hidden until the launcher provides it
+        self.assertEqual(reg.names(), ["calculator", "current_time", "fetch_url", "web_search"])
         self.assertTrue(reg.get("fetch_url").lookup and reg.get("web_search").lookup)
         self.assertFalse(reg.get("calculator").lookup)
 

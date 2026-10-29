@@ -211,7 +211,7 @@ fi
 # ================================================================= 4. vLLM
 step "4/6 vLLM (pinned) and a GPU smoke test"
 t_start
-uv sync -q "${LOCK[@]}" --python "$PYTHON_VERSION" --extra serve
+uv sync -q "${LOCK[@]}" --python "$PYTHON_VERSION" --extra serve --extra sandbox
 ok "vLLM $("$PY" -c 'import importlib.metadata as m; print(m.version("vllm"))') installed"
 t_end env_vllm
 t_start

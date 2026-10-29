@@ -274,7 +274,7 @@ class Dashboard:
                        "required": k in required,
                        "description": (v.get("description") or "") if isinstance(v, dict) else ""}
                       for k, v in props.items()]
-            out.append({"name": name, "description": t.description, "params": params, "web": bool(t.lookup),
+            out.append({"name": name, "description": t.description, "params": params, "web": self.registry.is_web(t),
                         "timeout_s": t.timeout_s, "source": t.source, "used_by": used.get(name, [])})
         return {"tools": out}
 

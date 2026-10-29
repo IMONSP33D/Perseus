@@ -113,6 +113,24 @@ def _engines(v: list) -> str | None:
     return None
 
 
+def _range(lo: int, hi: int) -> Callable[[Any], str | None]:
+    def check(v: Any) -> str | None:
+        return None if lo <= v <= hi else f"must be between {lo} and {hi}"
+    return check
+
+
+def _key_file(v: str) -> str | None:
+    if v and not (v.startswith("/") or v.startswith("~")):
+        return "must be an absolute path (or start with ~)"
+    return None
+
+
+def _languages(v: list) -> str | None:
+    from perseus.sandbox.languages import LANGUAGES
+    bad = [x for x in v if x not in LANGUAGES]
+    return f"unknown language(s) {', '.join(map(str, bad))} (known: {', '.join(LANGUAGES)})" if bad else None
+
+
 SCHEMA: dict[str, dict[str, Key]] = {
     "model": {
         "id": Key((str,), required=True, check=_repo_id),
@@ -151,6 +169,17 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "fetch_timeout_s": Key((int, float), 15, check=_positive),
         "max_response_kb": Key((int,), 2048, check=_positive),
         "warn_download_minutes": Key((int, float), 20, check=_positive),
+    },
+    "code_runner": {
+        "enabled": Key((bool,), True),
+        "backend": Key((str,), "e2b", choices=("e2b",)),
+        "key_file": Key((str,), "", check=_key_file),
+        "e2b_template": Key((str,), ""),
+        "internet": Key((bool,), False),
+        "languages": Key((list,), [], check=_languages),
+        "build_timeout_s": Key((int,), 120, check=_range(5, 180)),
+        "run_timeout_s": Key((int,), 30, check=_range(1, 120)),
+        "max_output_kb": Key((int,), 64, check=_range(4, 1024)),
     },
 }
 

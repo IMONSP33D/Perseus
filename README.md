@@ -30,6 +30,7 @@ Perseus takes a blank GPU box and a Hugging Face model id and gives you back a w
 - **Sizing and serving.** Reads your GPUs and the model, then picks the quantization, tensor parallelism and context length that fit, from one 24 GB card to an 8-GPU node. Downloads the weights, launches vLLM with the right tool-call and reasoning parsers, and proves tool calling works before you use it.
 - **The agent loop.** Every tool call is parsed, validated against its schema, executed with a timeout and shown in a live tool feed. Thinking is kept separate from the answer, with a budget you control.
 - **Safe web research.** A private SearXNG search engine and a read-only web gateway. The model never touches the network directly.
+- **A code runner.** The `run_code` tool builds and runs Python, JavaScript, Bash, C, C++, Rust, Go and Java in a fresh, network-less sandbox VM per call, never on the GPU box. Off until you add a sandbox key; see [Code runner](#code-runner).
 - **A dashboard.** Streaming chat, thinking panel, tool feed, settings, and a raw view of exactly what the model was sent. Plain HTML, CSS and JavaScript, served by Perseus itself.
 - **Development pipelines (preview).** Multi-stage workflows where each stage is a role with its own prompt and tools, and every handoff starts a fresh context window for unbiased review.
 
@@ -105,6 +106,7 @@ All settings live in **`perseus.toml`**, a copy of [`perseus.example.toml`](pers
 | `[server]` | `port`, `public` | Dashboard port. `public = true` binds `0.0.0.0`: anyone with the link can use the model |
 | `[search]` | `engines` | The SearXNG engines asked for each search |
 | `[limits]` | `research_depth` | `quick` (5), `standard` (20) or `deep` (50) web lookups per answer |
+| `[code_runner]` | `key_file`, `e2b_template` | Turns on `run_code`; see [Code runner](#code-runner) |
 
 **Example: a 32B model on a single 24 GB card**
 
@@ -134,6 +136,15 @@ hf_token = "hf_..."
 | `[limits]` | `fetch_timeout_s` | `15` | Per page read |
 | | `max_response_kb` | `2048` | Response size cap |
 | | `warn_download_minutes` | `20` | Warn when the download is expected to take longer |
+| `[code_runner]` | `enabled` | `true` | Inert until a key is set: `run_code` is hidden from the model without one |
+| | `backend` | `e2b` | The sandbox provider (more can plug in: `perseus/sandbox/backends/`) |
+| | `key_file` | `""` | Absolute path to a file holding the E2B key. Read only by the sandbox broker. Or export `E2B_API_KEY` |
+| | `e2b_template` | `""` | E2B template with the toolchains; `""` = E2B's default (Python, Node.js, Bash only) |
+| | `internet` | `false` | `true` lets programs reach the internet; the Internet Access switch then turns `run_code` off too |
+| | `languages` | `[]` | All installed languages, or a subset such as `["python", "rust"]` |
+| | `build_timeout_s` | `120` | Compile step limit, 5–180 |
+| | `run_timeout_s` | `30` | Program run limit, 1–120 |
+| | `max_output_kb` | `64` | Output kept per run, head and tail |
 
 Both entry points read `./perseus.toml` from the folder they run in. `--config FILE` points somewhere else.
 
@@ -238,10 +249,48 @@ def word_count(ctx, text: str):
 
 - Return a dict or a string. Raise `ToolFailure("message")` to give the model a clean error.
 - Tools may not import network, process or FFI libraries (`socket`, `urllib`, `requests`, `subprocess`, `ctypes`, `os.system` and others). A file that does is refused at load.
-- Reach the web only through `ctx.gateway.fetch(url)`, and search only through `ctx.search`.
+- Reach the web only through `ctx.gateway.fetch(url)`, search only through `ctx.search`, and run code only through `ctx.sandbox`.
 - Mark web-reading tools `lookup=True`, so they count toward research depth and their results are labelled untrusted.
+- A tool that needs an engine capability declares it, e.g. `requires="sandbox"`. It's hidden from the model and the dashboard until that capability is up. `untrusted=True` labels a non-web tool's output as untrusted.
 
-Built-in tools: `calculator`, `current_time`, `web_search` and `fetch_url`.
+Built-in tools: `calculator`, `current_time`, `web_search`, `fetch_url` and `run_code` (when the code runner is on).
+
+## Code runner
+
+`run_code` builds and runs one source file in a fresh sandbox VM and returns the outcome (`ok`, `compile_error`, `build_timeout`, `runtime_error` or `timeout`), the exit code, stdout and stderr. Every call gets a new, empty machine that is destroyed afterwards. Nothing runs on the GPU box.
+
+```
+run_code ──ctx.sandbox──▶ client ──loopback + per-boot token──▶ sandbox broker ──▶ backend ──▶ sandbox VM
+(tool)                    (Perseus)                           (supervised process)  (E2B)       (no network)
+```
+
+**Turn it on (E2B).** The free Hobby plan is enough for one user.
+
+1. Create an API key at [e2b.dev](https://e2b.dev) and save it: `install -m 600 /dev/null ~/.config/perseus/e2b.key`, then paste the key into that file.
+2. Build the toolchain image once (on E2B's builders, no Docker needed):
+   ```bash
+   uv run python -m setup.sandbox.build_template --key-file ~/.config/perseus/e2b.key
+   ```
+3. In `perseus.toml`:
+   ```toml
+   [code_runner]
+   key_file = "/home/you/.config/perseus/e2b.key"
+   e2b_template = "perseus-code"
+   ```
+4. Run `bash preflight.sh`, then `python3 perseus.py`. Startup prints `✓ code runner: e2b · python, javascript, …` or says why it's off.
+
+Skip step 2 to use E2B's default template: Python, JavaScript and Bash only. At startup the broker checks which toolchains the sandbox really has and offers the model only those.
+
+**How it stays safe**
+
+- **Fresh VM per call**, destroyed afterwards; build and run limits are enforced inside the VM, and output is capped.
+- **No network by default.** At startup the broker tries to connect out from inside the sandbox; if that succeeds while `internet = false`, `run_code` stays off (fails closed).
+- **The key never reaches Perseus.** The broker reads `key_file` itself. An exported `E2B_API_KEY` is moved out of Perseus's environment at boot, so tools, vLLM and SearXNG never inherit it.
+- **The socket guard stays closed.** Perseus reaches the broker only on loopback, like SearXNG; the gateway refuses loopback, so `fetch_url` can't reach it.
+- **Output is untrusted.** Program output is wrapped like web pages, and instruction-like text is flagged in the feed.
+
+**Other providers.** Backends sit behind a small contract in [`perseus/sandbox/backends/`](perseus/sandbox/backends/__init__.py): open a sandbox, write a file, run a command, destroy it. A new provider is one module there, and it's supported once it passes the conformance suite in [`tests/sandbox_conformance.py`](tests/sandbox_conformance.py). Adding a language is one entry in [`perseus/sandbox/languages.py`](perseus/sandbox/languages.py) plus a line in [`setup/sandbox/Dockerfile`](setup/sandbox/Dockerfile).
+
 
 ## How Perseus stays safe
 
@@ -250,8 +299,9 @@ The safety layers start before any GPU time is spent. Perseus runs 21 refusal ch
 1. **The tool loop** refuses calls with malformed or unexpected arguments, enforces the research-depth limit, and wraps web results as untrusted content.
 2. **The web gateway** is read-only and re-checks every redirect. It blocks private and internal addresses, secrets in URLs and DNS rebinding.
 3. **The socket guard** refuses every other outbound connection from the Perseus process.
-4. **vLLM** runs on loopback, offline, with a per-boot key and no Hugging Face token.
-5. **The dashboard** needs a session cookie or bearer token for everything except `/healthz` and static assets. It enforces same-origin writes and a strict content-security policy, and model or web text only ever reaches the page as plain text.
+4. **The code runner** runs programs only in remote, network-less sandbox VMs, through a separate broker process that holds the sandbox key. See [Code runner](#code-runner).
+5. **vLLM** runs on loopback, offline, with a per-boot key and no Hugging Face token.
+6. **The dashboard** needs a session cookie or bearer token for everything except `/healthz` and static assets. It enforces same-origin writes and a strict content-security policy, and model or web text only ever reaches the page as plain text.
 
 <details>
 <summary><b>The tool loop, step by step</b></summary>
@@ -263,7 +313,7 @@ The safety layers start before any GPU time is spent. Perseus runs 21 refusal ch
 | Depth | Web tools count toward Quick 5 / Standard 20 / Deep 50 lookups (scaled down on small GPUs). At the limit, web tools are withdrawn and the model is told to answer. | Refused |
 | Cache | An identical call in the same answer returns the earlier result. | — |
 | Execute | Runs with a timeout. Errors reach the model as one clean line, never a traceback. | Error |
-| Label | Web results are wrapped as untrusted content (a page can't fake the end marker). Instruction-like phrases get a warning badge in the feed. | — |
+| Label | Web results and program output are wrapped as untrusted content (a page can't fake the end marker). Instruction-like phrases get a warning badge in the feed. | — |
 | Budget | Each result is capped in tokens. On small GPUs older results shrink to title, URL and excerpt; the feed and export keep the full text. | — |
 
 </details>
@@ -294,7 +344,7 @@ Every rule is re-applied to every redirect hop.
 
 1. **Walls first.** Installs the socket guard, builds the gateway and runs the boot self-test (21 refusal checks, about a second). Any failure stops Perseus.
 2. **Weights.** Waits for the download that preflight started, with a live panel: per-file bars, speed, ETA and free disk.
-3. **Processes.** Starts SearXNG and vLLM under a supervisor that restarts them on a crash.
+3. **Processes.** Starts SearXNG, vLLM and (if configured) the sandbox broker under a supervisor that restarts them on a crash. The broker checks the sandbox's toolchains and network while the model loads.
 4. **Proof.** Times the first token, then sends one test tool call. It must come back parsed, or Perseus stops and names the parser.
 5. **Dashboard.** Checks the dashboard the way a browser would, checks that the box's SSH server allows tunnels, and prints the sign-in link and SSH command.
 
@@ -380,7 +430,8 @@ perseus/                         the checkout (this repo)
 │   ├── hardware.py              GPUs, driver, NVLink/PCIe, RAM, disks
 │   ├── hub.py                   Hugging Face metadata, file list, template checks
 │   ├── download.py              resumable download with a live panel
-│   └── install_searxng.sh       private search engine
+│   ├── install_searxng.sh       private search engine
+│   └── sandbox/                 the code runner's image (Dockerfile) and E2B template builder
 ├── perseus/                     the Python package
 │   ├── launcher.py              boot order
 │   ├── config.py                loads perseus.toml and the resolved settings
@@ -389,19 +440,20 @@ perseus/                         the checkout (this repo)
 │   ├── tools/                   one file per tool (registry in __init__.py, template in _example.py)
 │   ├── pipelines/               pipeline format and validation, plus the .toml definitions
 │   ├── safety/                  web gateway, URL and secret rules, socket guard, self-test
+│   ├── sandbox/                 code runner: languages, backends, broker process, client
 │   ├── web/                     HTTP server, dashboard state; static/ holds the page
 │   ├── search.py                SearXNG client (one fixed loopback address)
-│   ├── supervisor.py            keeps vLLM and SearXNG running
+│   ├── supervisor.py            keeps vLLM, SearXNG and the sandbox broker running
 │   └── console.py               terminal front end (--console)
 ├── docs/                        README images
-└── tests/                       191 tests; no GPU or network needed
+└── tests/                       261 tests; no GPU or network needed
 ```
 
 ```
 <fastest disk>/perseus/          the data directory, e.g. /mnt/nvme/perseus
 ├── weights/<org>/<model>/       the download (Hugging Face token removed afterwards)
 ├── perseus.resolved.toml        what preflight decided
-├── logs/                        preflight, vLLM, SearXNG, gateway, boot times, sessions
+├── logs/                        preflight, vLLM, SearXNG, sandbox, gateway, boot times, sessions
 ├── searxng/                     its source, venv and settings
 └── run/                         PIDs, per-boot keys, dashboard link (removed at shutdown)
 ```
@@ -411,7 +463,14 @@ The one large thing left in the checkout is the Python environment (`.venv`, abo
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -t .      # 191 tests, about 20 s; no GPU, network or extra packages
+python3 -m unittest discover -s tests -t .      # 261 tests, about 45 s; no GPU, network or extra packages
+```
+
+The sandbox conformance suite runs against a local, namespace-isolated runner when `unshare -rn` works (most Linux boxes; skipped elsewhere). To run it against E2B too, which costs a few cents:
+
+```bash
+PERSEUS_TEST_E2B=1 PERSEUS_TEST_E2B_KEY_FILE=~/.config/perseus/e2b.key PERSEUS_TEST_E2B_TEMPLATE=perseus-code \
+  uv run python -m unittest tests.test_sandbox_conformance
 ```
 
 Dry-run the whole preflight check against a recorded GPU and model:
@@ -429,7 +488,7 @@ uvx pre-commit install
 
 ## Secrets
 
-`perseus.toml` is git-ignored, kept at mode 600, and read only by preflight. `perseus.py` never loads the Hugging Face token, and the token is scrubbed from caches after the download. The pre-commit hook above blocks commits that contain tokens or the config file.
+`perseus.toml` is git-ignored, kept at mode 600, and read only by preflight. `perseus.py` never loads the Hugging Face token, and the token is scrubbed from caches after the download. The E2B key lives in its own file, read only by the sandbox broker. The pre-commit hook above blocks commits that contain tokens or the config file.
 
 ## License
 
