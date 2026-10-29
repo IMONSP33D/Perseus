@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from perseus.engine.feed import Feed, ToolEvent, summarize_args
+from perseus.engine.feed import Feed, ToolEvent, clean_feed, summarize_args
 from perseus.model.thinksplit import RETRACT
 from perseus.safety.gateway import GatewayError
 from perseus.safety.netpolicy import Blocked
@@ -397,12 +397,16 @@ class Engine:
     # ------------------------------------------------------------------ results
     def _render(self, tool, result) -> tuple[str, dict]:
         meta: dict = {}
+        if isinstance(result, dict) and "feed" in result:
+            # the tool's own card view: shown in the feed, never part of what the model is told
+            result = dict(result)
+            view = clean_feed(result.pop("feed"))
+            if view:
+                meta["feed"] = view
         if isinstance(result, dict):
-            meta = {k: v for k, v in (("url", result.get("url")), ("http_status", result.get("status"))) if v}
+            meta.update({k: v for k, v in (("url", result.get("url")), ("http_status", result.get("status"))) if v})
             if not isinstance(meta.get("http_status"), int) or isinstance(meta.get("http_status"), bool):
                 meta.pop("http_status", None)          # only real HTTP codes go in that slot
-            if isinstance(result.get("outcome"), str):
-                meta["outcome"] = result["outcome"][:60]
             text = result.get("text")
             if isinstance(text, str):
                 meta["bytes"] = len(text.encode())
