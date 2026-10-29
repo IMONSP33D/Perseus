@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from perseus.engine.feed import Feed, ToolEvent, summarize_args
+from perseus.model.thinksplit import RETRACT
 from perseus.safety.gateway import GatewayError
 from perseus.safety.netpolicy import Blocked
 from perseus.engine.prompts import (CLOSE_OUT, CLOSE_OUT_CONTINUE, LIMIT_REACHED, UNTRUSTED_CLOSE,
@@ -157,9 +158,12 @@ class Engine:
         def over_budget() -> bool:
             return bool(o.think_tokens) and not answering and self.thought_tokens > o.think_tokens
 
-        def piece(text: str, thought: bool):
+        def piece(text: str, thought):
             nonlocal answering
-            if thought:
+            if thought == RETRACT:          # answer text that was thinking: this step's answer is gone
+                self.thought_tokens += stream_tokens(text)
+                answering = False
+            elif thought:
                 self.thought_tokens += stream_tokens(text)
             else:
                 answering = True
@@ -194,9 +198,12 @@ class Engine:
             wrap_thought = 0
             wrote = False
 
-            def wrap_piece(text: str, thought: bool):
+            def wrap_piece(text: str, thought):
                 nonlocal wrap_thought, wrote
-                if thought:
+                if thought == RETRACT:
+                    wrap_thought += len(text)
+                    wrote = False
+                elif thought:
                     wrap_thought += len(text)
                 else:
                     wrote = True

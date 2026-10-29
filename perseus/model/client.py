@@ -2,6 +2,10 @@
 
 Streams by default and reassembles tool calls from their deltas, so the same
 call feeds a live dashboard (on_text) and the tool loop (the finished message).
+
+on_text(text, thought) gets each piece; thought is True for thinking, False for answer,
+or RETRACT ("retract") when text already sent as answer turns out to be thinking (see
+thinksplit): take it off the end of the answer and add it to the thinking.
 """
 
 from __future__ import annotations
@@ -12,6 +16,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable
+
+from perseus.model.thinksplit import ANSWER, RETRACT, THOUGHT, ThinkSplitter
 
 
 class LLMError(Exception):
@@ -66,6 +72,7 @@ class LLMClient:
         t0 = time.monotonic()
         reply = Reply()
         calls: dict[int, dict] = {}
+        split = ThinkSplitter()     # thinking the reasoning parser let through into content
         with self._post("/v1/chat/completions", body, self.timeout_s) as resp:
             for raw in resp:
                 if should_stop and should_stop():
@@ -91,9 +98,7 @@ class LLMClient:
                         if on_text:
                             on_text(thought, True)
                     if text:
-                        reply.content += text
-                        if on_text:
-                            on_text(text, False)
+                        self._route(reply, split.feed(text), on_text)
                     for tc in delta.get("tool_calls") or []:
                         slot = calls.setdefault(tc.get("index", len(calls)),
                                                 {"id": None, "type": "function", "function": {"name": "", "arguments": ""}})
@@ -104,7 +109,21 @@ class LLMClient:
                         slot["function"]["arguments"] += fn.get("arguments") or ""
                     if choice.get("finish_reason"):
                         reply.finish_reason = choice["finish_reason"]
+        self._route(reply, split.flush(), on_text)
         reply.tool_calls = [calls[i] for i in sorted(calls)]
         for n, c in enumerate(reply.tool_calls):
             c["id"] = c["id"] or f"call_{n}"
         return reply
+
+    @staticmethod
+    def _route(reply: Reply, pieces: list[tuple[str, str]], on_text) -> None:
+        for kind, text in pieces:
+            if kind == ANSWER:
+                reply.content += text
+            elif kind == THOUGHT:
+                reply.reasoning += text
+            elif kind == RETRACT:
+                reply.content = reply.content[:len(reply.content) - len(text)]
+                reply.reasoning += text
+            if on_text:
+                on_text(text, {ANSWER: False, THOUGHT: True, RETRACT: RETRACT}[kind])

@@ -671,6 +671,14 @@
               current.content += ev.text;
             }
             if (chat.id === ui.activeId) replaceMessage(current);
+          } else if (ev.type === 'retract' && current) {
+            // text shown as answer that turned out to be thinking: move it into the thinking box
+            if (current.content.endsWith(ev.text)) current.content = current.content.slice(0, current.content.length - ev.text.length);
+            if (!current.content) current.think_secs = null;
+            current.reasoning += ev.text;
+            if (ev.think_used != null) current.think_used = ev.think_used;
+            if (current.phase !== 'closing') current.phase = 'thinking';
+            if (chat.id === ui.activeId) replaceMessage(current);
           } else if (ev.type === 'phase' && current) {
             current.phase = ev.phase;
             if (chat.id === ui.activeId) replaceMessage(current);

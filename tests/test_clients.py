@@ -38,6 +38,13 @@ class _H(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
+        if req["messages"][-1]["content"] == "leak":
+            # thinking the reasoning parser missed: a stray </think>, then a second block mid-answer
+            parts = ["The user wants ", "a sum.</th", "ink>\n\nIt is 2.", " <think>double-check</think>", " Done."]
+            for t in parts:
+                self.wfile.write(f"data: {json.dumps({'choices': [{'delta': {'content': t}}]})}\n\n".encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+            return
         chunks = [{"choices": [{"delta": {"reasoning_content": "thinking…"}}]},
                   {"choices": [{"delta": {"content": "Let me "}}]},
                   {"choices": [{"delta": {"content": "check."}}]},
@@ -81,6 +88,15 @@ class Clients(unittest.TestCase):
         self.assertEqual(seen[0], ("thinking…", True))
         self.assertEqual(self.srv.last["tool_choice"], "auto")
         self.assertEqual(r.message()["tool_calls"], r.tool_calls)
+
+    def test_leaked_thinking_is_moved_out_of_the_answer(self):
+        seen = []
+        r = LLMClient(self.port, "k", "m").chat([{"role": "user", "content": "leak"}],
+                                                on_text=lambda t, thought: seen.append((t, thought)))
+        self.assertEqual(r.content, "It is 2. Done.")
+        self.assertEqual(r.reasoning, "The user wants a sum.double-check")
+        self.assertIn(("The user wants a sum.", "retract"), seen)    # it had already been shown as answer
+        self.assertEqual(r.message()["content"], "It is 2. Done.")   # history gets the clean answer
 
     def test_bad_key_is_an_error(self):
         with self.assertRaises(LLMError) as e:

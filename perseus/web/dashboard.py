@@ -20,6 +20,7 @@ from perseus import __version__
 from perseus.engine.loop import Engine, EngineSettings, TurnOptions
 from perseus.engine.feed import Feed, ToolEvent
 from perseus.engine.session import Recorder
+from perseus.model.thinksplit import RETRACT
 
 PERSONAS = {
     "engineer": "You are a senior software engineer. Give precise, working answers, show code when it helps, "
@@ -300,7 +301,19 @@ class Dashboard:
                 msg["phase"] = phase
                 q.put({"type": "phase", "phase": msg["phase"]})
 
-        def on_text(piece: str, thought: bool):
+        def on_text(piece: str, thought):
+            if thought == RETRACT:
+                # shown as answer, turned out to be thinking: move it back into the thinking box
+                if msg["content"].endswith(piece):
+                    msg["content"] = msg["content"][:len(msg["content"]) - len(piece)]
+                if not msg["content"]:
+                    msg["think_secs"] = None       # the answer hadn't really started
+                msg["reasoning"] += piece
+                if msg["phase"] != "closing":
+                    msg["phase"] = "thinking"
+                msg["think_used"] = chat.engine.thought_tokens
+                q.put({"type": "retract", "text": piece, "think_used": msg["think_used"]})
+                return
             if msg["phase"] != "closing":
                 msg["phase"] = "thinking" if thought else "answering"
             ev = {"type": "text", "text": piece, "thought": thought}
