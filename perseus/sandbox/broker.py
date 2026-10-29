@@ -8,8 +8,9 @@ perseus.sandbox.client. Swapping providers changes this process, never Perseus.
 
     python -m perseus.sandbox.broker --port N
     env PERSEUS_SANDBOX_TOKEN     per-boot bearer token (required)
-        PERSEUS_SANDBOX_SETTINGS  JSON of the [code_runner] config section
-        E2B_API_KEY               optional; [code_runner] key_file is preferred
+        PERSEUS_SANDBOX_SETTINGS  JSON of the [code_runner] config section, plus the path of perseus.toml;
+                                  the broker reads [secrets] code_runner_api_key from that file itself
+        E2B_API_KEY               fallback when perseus.toml has no key
 
 Endpoints (all JSON):
     GET  /healthz   200 once the start-up probe has finished (success or not), 503 before
@@ -57,7 +58,9 @@ class Broker:
     def start(self) -> None:
         try:
             if self.backend is None:
-                self.backend = backends.make(self.backend_name, self.cfg)
+                settings = dict(self.cfg)
+                settings["api_key"] = backends.config_secret(settings.pop("config_path", ""))
+                self.backend = backends.make(self.backend_name, settings)
             self.state.update(probe(self.backend, self.run_settings))
             caps = self.backend.capabilities()
             self.state["capabilities"] = {"os": caps.os, "controls_network": caps.controls_network, **caps.extras}

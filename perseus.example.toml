@@ -1,5 +1,6 @@
 # Perseus configuration.
-# Copy to perseus.toml (git-ignored, mode 600) and fill in [model].id and [secrets].hf_token.
+# Copy to perseus.toml (git-ignored, mode 600) and fill in [model].id and [secrets].hf_token
+# (and [secrets].code_runner_api_key to turn on the code runner).
 # Both entry points read ./perseus.toml from the folder they run in; --config FILE points elsewhere.
 # Any key set to "auto" is decided by preflight from the hardware and the model;
 # a value you type here wins. CLI flags override one key for one run: --model.id org/name
@@ -18,6 +19,8 @@ reasoning_parser = "auto"    # auto | none | a vLLM reasoning parser name
 
 [secrets]
 hf_token = "hf_..."          # read by preflight only; perseus.py never loads it
+code_runner_api_key = "e2b_..."  # E2B API key for the run_code tool (e2b.dev); read only by the sandbox
+                             # broker, never by perseus.py. Leave as is to keep the code runner off.
 
 [storage]
 data_dir = "auto"            # auto = fastest local disk with room (weights, logs, SearXNG, run state);
@@ -43,10 +46,9 @@ max_response_kb = 2048
 warn_download_minutes = 20
 
 [code_runner]                # the run_code tool: builds and runs code in a remote, disposable sandbox
-enabled = true               # on by default; stays off (and hidden from the model) until a key is set
+enabled = true               # on by default; stays off (and hidden from the model) until
+                             # [secrets] code_runner_api_key is set
 backend = "e2b"              # e2b (more backends can plug in; see perseus/sandbox/backends/)
-key_file = ""                # absolute path to a file holding your E2B API key (mode 600); read only by
-                             # the sandbox broker, never by perseus.py. Or export E2B_API_KEY instead.
 e2b_template = ""            # E2B template with the toolchains (setup/sandbox/); "" = E2B default
                              # (Python, Node.js and Bash only; C, C++, Rust, Go and Java need the template)
 internet = false             # true lets sandboxed programs reach the internet (then the Internet

@@ -36,6 +36,7 @@ SIXTOFOUR = ipaddress.ip_network("2002::/16")
 
 SECRET_PATTERNS = [
     ("Hugging Face token", re.compile(r"hf_[A-Za-z0-9]{20,}")),
+    ("E2B API key", re.compile(r"e2b_[A-Za-z0-9]{20,}")),
     ("Anthropic/OpenAI-style key", re.compile(r"sk-[A-Za-z0-9_\-]{20,}")),
     ("GitHub token", re.compile(r"(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})")),
     ("AWS access key", re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}")),

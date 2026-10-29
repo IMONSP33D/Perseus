@@ -17,8 +17,12 @@ Adding a provider: one module in this folder with a class that implements
 from __future__ import annotations
 
 import importlib
+import tomllib
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
+
+SECRET_KEY = "code_runner_api_key"     # [secrets] code_runner_api_key in perseus.toml, next to hf_token
 
 
 # ---------------------------------------------------------------- errors
@@ -79,6 +83,18 @@ class Backend(Protocol):
 
     def open(self, spec: SessionSpec) -> Session:
         """A fresh sandbox with an empty job folder and no credentials or host environment."""
+
+
+def config_secret(config_path: str) -> str:
+    """[secrets] code_runner_api_key from perseus.toml. Called by the broker process only, never by Perseus."""
+    if not config_path:
+        return ""
+    try:
+        data = tomllib.loads(Path(config_path).expanduser().read_text())
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise SandboxError("config", f"can't read {config_path} for [secrets] {SECRET_KEY} ({type(e).__name__})")
+    key = str((data.get("secrets") or {}).get(SECRET_KEY) or "").strip()
+    return "" if key == "e2b_..." else key
 
 
 # ---------------------------------------------------------------- discovery

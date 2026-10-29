@@ -119,9 +119,9 @@ def _range(lo: int, hi: int) -> Callable[[Any], str | None]:
     return check
 
 
-def _key_file(v: str) -> str | None:
-    if v and not (v.startswith("/") or v.startswith("~")):
-        return "must be an absolute path (or start with ~)"
+def _api_key(v: str) -> str | None:
+    if v and any(c.isspace() for c in v.strip()):
+        return "must be the key alone, with no spaces"
     return None
 
 
@@ -146,6 +146,7 @@ SCHEMA: dict[str, dict[str, Key]] = {
     },
     "secrets": {
         "hf_token": Key((str,), "", check=_hf_token, secret=True),
+        "code_runner_api_key": Key((str,), "", check=_api_key, secret=True),
     },
     "storage": {
         "data_dir": Key((str,), "auto", check=_data_dir),
@@ -173,7 +174,6 @@ SCHEMA: dict[str, dict[str, Key]] = {
     "code_runner": {
         "enabled": Key((bool,), True),
         "backend": Key((str,), "e2b", choices=("e2b",)),
-        "key_file": Key((str,), "", check=_key_file),
         "e2b_template": Key((str,), ""),
         "internet": Key((bool,), False),
         "languages": Key((list,), [], check=_languages),
@@ -318,6 +318,10 @@ def validate(raw: dict, *, text: str = "", name: str = "perseus.toml",
         if data["secrets"]["hf_token"] in ("", "hf_..."):
             data["secrets"]["hf_token"] = ""
             warnings.append("no HF token set: fine for public repos; gated or private repos will fail the check")
+        key = data["secrets"]["code_runner_api_key"].strip()
+        data["secrets"]["code_runner_api_key"] = "" if key in ("", "e2b_...") else key
+        if data["code_runner"]["enabled"] and not data["secrets"]["code_runner_api_key"]:
+            warnings.append("no [secrets] code_runner_api_key set: the code runner (run_code) stays off")
 
     if problems:
         raise ConfigError(problems)
