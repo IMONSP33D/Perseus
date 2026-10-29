@@ -17,7 +17,10 @@ Endpoints (all JSON):
     GET  /info      backend, languages found, network check, or the start-up error
     POST /run       {"language", "code", "stdin"} -> a runner.run_program result
 
-Logs carry the language, outcome and timing of each run, never the code or its output.
+The log (logs/sandbox.log) records, at start-up, which provider, API host and key this broker uses
+(the key only as a fingerprint such as e2b_…3f9a), and then every sandbox's lifecycle: the
+provider's sandbox id when it is created, each step's command, exit code and timing, and
+whether it was destroyed. It never records the code or its output.
 """
 
 from __future__ import annotations
@@ -44,6 +47,22 @@ def log(msg: str) -> None:
     print(f"{time.strftime('%H:%M:%S')} sandbox: {msg}", file=sys.stderr, flush=True)
 
 
+def describe_event(e: dict) -> str:
+    """One readable log line per sandbox lifecycle event."""
+    sid = e.get("sandbox", "?")
+    if e["event"] == "open":
+        return f"sandbox {sid}: created in {e['ms']} ms ({e['purpose']}, network {e['network']})"
+    if e["event"] == "open_failed":
+        return f"sandbox: create FAILED after {e['ms']} ms ({e['purpose']}): {e['code']}: {e['error']}"
+    if e["event"] == "exec":
+        end = "timed out" if e["timed_out"] else f"exit {e['exit']}"
+        return f"sandbox {sid}: `{e['cmd']}` -> {end} in {e['ms']} ms"
+    if e["event"] == "close":
+        how = {True: "destroyed", False: "destroy FAILED (it expires on its own)", None: "closed"}[e.get("killed")]
+        return f"sandbox {sid}: {how}, lived {e['lived_ms'] / 1000:.1f} s"
+    return f"sandbox event {e}"
+
+
 class Broker:
     def __init__(self, backend_name: str, settings: dict, token: str, environ=os.environ, backend=None):
         self.backend_name, self.cfg, self.token = backend_name, settings, token
@@ -61,7 +80,12 @@ class Broker:
                 settings = dict(self.cfg)
                 settings["api_key"] = backends.config_secret(settings.pop("config_path", ""))
                 self.backend = backends.make(self.backend_name, settings)
-            self.state.update(probe(self.backend, self.run_settings))
+            ident = self.identity()
+            self.state["identity"] = ident
+            log("identity: " + " · ".join(f"{k}={v}" for k, v in ident.items()))
+            if ident.get("env_overrides"):
+                log(f"WARNING: these environment variables redirect the provider's SDK: {ident['env_overrides']}")
+            self.state.update(probe(self.backend, self.run_settings, on_event=self.event))
             caps = self.backend.capabilities()
             self.state["capabilities"] = {"os": caps.os, "controls_network": caps.controls_network, **caps.extras}
             log(f"{self.backend_name}: {len(self.state['languages'])} language(s) available "
@@ -77,6 +101,15 @@ class Broker:
             log(f"{self.backend_name}: start-up failed ({type(e).__name__}: {e})")
         finally:
             self.state["probing"] = False
+
+    def identity(self) -> dict:
+        try:
+            return dict(self.backend.describe()) if hasattr(self.backend, "describe") else {"provider": self.backend_name}
+        except Exception as e:
+            return {"provider": self.backend_name, "describe_error": type(e).__name__}
+
+    def event(self, e: dict) -> None:
+        log(describe_event(e))
 
     def info(self) -> dict:
         return {"backend": self.backend_name, "network": self.run_settings.network,
@@ -98,8 +131,9 @@ class Broker:
         if not self._slots.acquire(blocking=False):
             return 429, {"error": {"code": "quota", "message": "too many programs running at once"}}
         try:
-            result = run_program(self.backend, language, code, stdin, self.run_settings)
-            log(f"run {language} (network {result['network']}): {result['status']} in {result['seconds']}s")
+            result = run_program(self.backend, language, code, stdin, self.run_settings, on_event=self.event)
+            log(f"run {language} in sandbox {result['sandbox_id']} ({result['backend']}, network {result['network']}): "
+                f"{result['status']} in {result['seconds']}s")
             return 200, result
         except SandboxError as e:
             log(f"run {language}: sandbox error ({e.code}): {e}")

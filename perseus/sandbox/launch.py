@@ -92,7 +92,13 @@ def connect(client, registry) -> tuple[bool, str]:
         registry.withdraw("sandbox")
         return False, f'off (the sandbox could reach other sites although [code_runner] network = "{level}")'
     registry.provide("sandbox", enums={"language": langs}, note=NOTES.get(level, ""))
-    parts = [str(info.get("backend")), ", ".join(langs), f"network {level}"]
+    ident = info.get("identity") or {}
+    who = str(info.get("backend"))
+    if ident.get("key"):
+        who += f" (key {ident['key']} from {ident.get('key_source', '?')}, {ident.get('api_url', '?')})"
+    parts = [who, ", ".join(langs), f"network {level}"]
+    if ident.get("env_overrides"):
+        parts.append(f"! SDK redirected by {', '.join(ident['env_overrides'])}")
     if level == "packages" and info.get("packages_ok") is False:
         parts.append("! package registries unreachable, installs will fail")
     missing = info.get("missing") or []

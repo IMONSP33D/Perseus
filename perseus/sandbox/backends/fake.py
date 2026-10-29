@@ -21,6 +21,7 @@ from perseus.sandbox.backends import Capabilities, ExecResult, SandboxError, Ses
 class FakeSession:
     def __init__(self, backend: "FakeBackend", spec: SessionSpec):
         self.backend, self.spec = backend, spec
+        self.id = f"fake-{len(backend.sessions) + 1}"
         self.files: dict[str, str] = {}
         self.commands: list[tuple[str, float]] = []
         self.closed = False
@@ -62,6 +63,9 @@ class FakeBackend:
 
     def capabilities(self) -> Capabilities:
         return Capabilities(os="linux", controls_network=True, max_lifetime_s=3600)
+
+    def describe(self) -> dict:
+        return {"provider": "fake"}
 
     def open(self, spec: SessionSpec) -> FakeSession:
         if self.fail_open:

@@ -36,6 +36,7 @@ def namespaces_work() -> bool:
 class LocalSession:
     def __init__(self, network: str):
         self.dir = Path(tempfile.mkdtemp(prefix="perseus-job-"))
+        self.id = f"local:{self.dir.name}"
         self.internet = network == "full"     # no host allowlist here: "packages" is refused up front
         # a clean environment: nothing from the host process (keys, tokens, proxies) leaks in
         self.env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.dir), "LANG": "C.UTF-8",
@@ -88,6 +89,9 @@ class LocalUnsafeBackend:
     def capabilities(self) -> Capabilities:
         return Capabilities(os="linux", controls_network=True, max_lifetime_s=3600, network_levels=("none", "full"),
                             extras={"unsafe": True})
+
+    def describe(self) -> dict:
+        return {"provider": "local_unsafe", "note": "TEST BACKEND: programs run as local processes on this machine"}
 
     def open(self, spec: SessionSpec) -> LocalSession:
         if spec.network not in ("none", "full"):

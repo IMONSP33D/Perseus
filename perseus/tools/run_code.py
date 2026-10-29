@@ -62,6 +62,8 @@ def feed_view(language: str, code: str, stdin: str, r: dict) -> dict:
         detail.append(_plural(out_lines, "line") + " of output")
     if r.get("network") and r["network"] != "none":
         detail.append(f"network {r['network']}")
+    if r.get("sandbox_id"):
+        detail.append(f"{r.get('backend', 'sandbox')} {r['sandbox_id']}")    # look it up in the provider's dashboard
     sections = [{"title": f"Code · {name} · {_plural(_count(code), 'line')}", "text": code}]
     if stdin:
         sections.append({"title": "stdin", "text": stdin})

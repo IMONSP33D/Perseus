@@ -51,6 +51,51 @@ class RunSettings:
         return [n for n in LANGUAGES if not self.languages or n in self.languages]
 
 
+class _Traced:
+    """A session that reports each step (sandbox id, command, exit code, timing) to `emit`.
+
+    Commands here are Perseus's own (build and run lines, checks); the program's code and its
+    output are never reported, only that a step ran and how it ended."""
+
+    def __init__(self, session, emit):
+        self._s, self._emit = session, emit
+        self.id = str(getattr(session, "id", "?"))
+        self._t0 = time.monotonic()
+
+    def write_file(self, path: str, content: str) -> None:
+        self._s.write_file(path, content)
+
+    def exec(self, cmd: str, timeout_s: float):
+        t0 = time.monotonic()
+        r = self._s.exec(cmd, timeout_s)
+        self._emit({"event": "exec", "sandbox": self.id, "cmd": cmd[:120], "exit": r.exit_code,
+                    "timed_out": r.timed_out, "ms": int((time.monotonic() - t0) * 1000)})
+        return r
+
+    def close(self) -> None:
+        self._s.close()
+        self._emit({"event": "close", "sandbox": self.id, "killed": getattr(self._s, "killed", None),
+                    "lived_ms": int((time.monotonic() - self._t0) * 1000)})
+
+
+def _open(backend: Backend, spec: SessionSpec, emit, purpose: str) -> _Traced:
+    t0 = time.monotonic()
+    try:
+        session = backend.open(spec)
+    except SandboxError as e:
+        emit({"event": "open_failed", "purpose": purpose, "network": spec.network, "code": e.code, "error": str(e)[:300],
+              "ms": int((time.monotonic() - t0) * 1000)})
+        raise
+    traced = _Traced(session, emit)
+    emit({"event": "open", "sandbox": traced.id, "purpose": purpose, "network": spec.network,
+          "ms": int((time.monotonic() - t0) * 1000)})
+    return traced
+
+
+def _quiet(_event: dict) -> None:
+    pass
+
+
 def cap(text: str, max_bytes: int) -> tuple[str, bool]:
     """Keep the first two thirds and the last third of the budget; mark what was cut."""
     raw = text.encode()
@@ -71,15 +116,18 @@ def _exit_note(code: int | None) -> str | None:
 
 
 def run_program(backend: Backend, language: str, code: str, stdin: str = "",
-                settings: RunSettings | None = None) -> dict:
+                settings: RunSettings | None = None, on_event=None) -> dict:
+    """`on_event(dict)`: called for each step (sandbox opened, command run, sandbox closed)."""
     s = settings or RunSettings()
     level = s.network
     lang = LANGUAGES.get(language)
     if lang is None:
         raise SandboxError("config", f"unknown language {language!r}")
     per_stream = max(1024, s.max_output_kb * 1024 // 2)
-    session = backend.open(SessionSpec(network=level, lifetime_s=s.build_timeout_s + s.run_timeout_s + 120))
-    out: dict = {"language": language, "status": "ok", "exit_code": None, "build": None, "network": level}
+    session = _open(backend, SessionSpec(network=level, lifetime_s=s.build_timeout_s + s.run_timeout_s + 120),
+                    on_event or _quiet, f"run {language}")
+    out: dict = {"language": language, "status": "ok", "exit_code": None, "build": None, "network": level,
+                 "backend": getattr(backend, "name", "?"), "sandbox_id": session.id}
     t0 = time.monotonic()
     try:
         session.write_file(lang.file, code)
@@ -136,7 +184,7 @@ def _reachable(session, have_python: bool, urls: list[str]) -> dict[str, bool]:
     return {u: "CONNECTED" in r.stdout for u in urls}
 
 
-def probe(backend: Backend, settings: RunSettings | None = None) -> dict:
+def probe(backend: Backend, settings: RunSettings | None = None, on_event=None) -> dict:
     """Which toolchains this backend's sandbox has, and whether its network matches the setting.
 
     network_blocked  arbitrary sites are unreachable at the configured level (None for "full")
@@ -149,7 +197,7 @@ def probe(backend: Backend, settings: RunSettings | None = None) -> dict:
         raise SandboxError("config", f"this sandbox backend can't enforce network = {s.network!r} "
                                      f"(it supports {', '.join(levels)})")
     out: dict = {"network": s.network, "network_blocked": None, "packages_ok": None}
-    session = backend.open(SessionSpec(network=s.network, lifetime_s=300))
+    session = _open(backend, SessionSpec(network=s.network, lifetime_s=300), on_event or _quiet, "start-up probe")
     available, missing = [], []
     try:
         for name in s.wanted():
@@ -164,5 +212,5 @@ def probe(backend: Backend, settings: RunSettings | None = None) -> dict:
                 out["packages_ok"] = seen[network.PROBE_PACKAGES]
     finally:
         session.close()
-    out.update(languages=available, missing=missing, seconds=round(time.monotonic() - t0, 2))
+    out.update(languages=available, missing=missing, seconds=round(time.monotonic() - t0, 2), probe_sandbox=session.id)
     return out

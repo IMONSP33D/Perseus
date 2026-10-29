@@ -10,7 +10,7 @@ Turn a rented Linux GPU server into a private, sandboxed tool-calling assistant 
 
 ![Python 3.11–3.14](https://img.shields.io/badge/python-3.11%E2%80%933.14-2B2D42)
 ![vLLM 0.32](https://img.shields.io/badge/vLLM-0.32.0-2B2D42)
-![Tests](https://img.shields.io/badge/tests-288%20passing-16A34A)
+![Tests](https://img.shields.io/badge/tests-297%20passing-16A34A)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-2B2D42)](LICENSE)
 
 [Quick start](#quick-start) · [Configuration](#configuration) · [Dashboard](#the-dashboard) · [Pipelines](#development-pipelines-preview) · [Tools](#writing-tools) · [Security](#how-perseus-stays-safe) · [Project structure](#project-structure) · [License](#license)
@@ -307,6 +307,20 @@ The model's description of `run_code` tells it which level is in effect, so it k
 - **The socket guard stays closed.** Perseus reaches the broker only on loopback, like SearXNG; the gateway refuses loopback, so `fetch_url` can't reach it.
 - **Output is untrusted.** Program output is wrapped like web pages, and instruction-like text is flagged in the feed.
 
+**Checking where code runs.** One command creates a real sandbox with your key and shows exactly where it is:
+
+```bash
+uv run python -m perseus.sandbox.doctor
+```
+
+It prints the key it used (as a fingerprint, such as `e2b_…3f9a`), where that key came from, the API host, and any `E2B_*` variables that would redirect the SDK. It then creates a sandbox and prints E2B's id for it, asks E2B's API with the same key to confirm it sees that sandbox, shows what the sandbox reports about itself (`pwd`, hostname, user), and destroys it. If E2B's dashboard doesn't show that sandbox id, the dashboard is open on a different account or team than the key's.
+
+Every run is also logged in `<data>/logs/sandbox.log`:
+- **At start-up:** the provider, the API host, and the key fingerprint and its source.
+- **For each sandbox:** E2B's sandbox id when it's created, each step's command, exit code and timing, and whether it was destroyed.
+
+The log never contains the code or its output. Each `run_code` card in the tool feed shows the same sandbox id.
+
 **Other providers.** Backends sit behind a small contract in [`perseus/sandbox/backends/`](perseus/sandbox/backends/__init__.py): open a sandbox, write a file, run a command, destroy it. A new provider is one module there, and it's supported once it passes the conformance suite in [`tests/sandbox_conformance.py`](tests/sandbox_conformance.py). Adding a language is one entry in [`perseus/sandbox/languages.py`](perseus/sandbox/languages.py) plus a line in [`setup/sandbox/Dockerfile`](setup/sandbox/Dockerfile).
 
 
@@ -465,7 +479,7 @@ perseus/                         the checkout (this repo)
 │   ├── supervisor.py            keeps vLLM, SearXNG and the sandbox broker running
 │   └── console.py               terminal front end (--console)
 ├── docs/                        README images
-└── tests/                       288 tests; no GPU or network needed
+└── tests/                       297 tests; no GPU or network needed
 ```
 
 ```
@@ -482,7 +496,7 @@ The one large thing left in the checkout is the Python environment (`.venv`, abo
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -t .      # 288 tests, about 45 s; no GPU, network or extra packages
+python3 -m unittest discover -s tests -t .      # 297 tests, about 45 s; no GPU, network or extra packages
 ```
 
 The sandbox conformance suite runs against a local, namespace-isolated runner when `unshare -rn` works (most Linux boxes; skipped elsewhere). To run it against E2B too (it uses the key and template from `./perseus.toml`, and costs a few cents):
