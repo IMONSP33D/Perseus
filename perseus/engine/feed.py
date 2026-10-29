@@ -35,7 +35,7 @@ class ToolEvent:
     result: str | None = None       # the text returned to the model
     warning: str | None = None      # e.g. instruction-like phrases found in a page
     lookup: str | None = None       # "7 of 20"
-    outcome: str | None = None      # a tool's own one-word result, e.g. run_code's "program failed · exit 1"
+    feed: dict | None = None        # a tool's own card view (see clean_feed); shown in the feed, never sent to the model
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -84,9 +84,54 @@ class Feed:
             self.events.clear()
 
 
+FEED_TONES = ("", "warn", "bad", "run")
+FEED_SECTION_CHARS = 20_000
+
+
+def clean_feed(view: Any) -> dict | None:
+    """A tool's display-only card view, made safe to store and show (all plain text, sizes capped).
+
+        pill      badge text, e.g. "Program failed" (replaces "OK" when the call itself succeeded)
+        tone      "", "warn", "bad" or "run": the badge colour
+        summary   one line under the tool name, e.g. "Python · 42 lines"
+        headline  the one line that matters, e.g. the error a program died with
+        detail    small text after the badge, e.g. "exit 1 · 0.7 s"
+        sections  [{"title", "text"}]: readable blocks in Details (code, stdin, stdout, stderr)
+    """
+    if not isinstance(view, dict):
+        return None
+    out: dict = {}
+    for key, cap in (("pill", 30), ("summary", 160), ("headline", 240), ("detail", 120)):
+        if isinstance(view.get(key), str) and view[key].strip():
+            out[key] = view[key].strip()[:cap]
+    tone = view.get("tone", "")
+    out["tone"] = tone if tone in FEED_TONES else ""
+    sections = []
+    for sec in view.get("sections") or []:
+        if isinstance(sec, dict) and isinstance(sec.get("text"), str) and isinstance(sec.get("title"), str):
+            text = sec["text"]
+            if len(text) > FEED_SECTION_CHARS:
+                text = text[:FEED_SECTION_CHARS] + f"\n… ({len(sec['text']) - FEED_SECTION_CHARS:,} more characters)"
+            sections.append({"title": sec["title"][:80], "text": text})
+    if sections:
+        out["sections"] = sections[:8]
+    return out
+
+
+def _lines(text: str) -> int:
+    return text.count("\n") + (0 if text.endswith("\n") else 1) if text else 0
+
+
 def summarize_args(tool: str, args: Any, limit: int = 120) -> str:
     if not isinstance(args, dict):
         return str(args)[:limit]
+    if isinstance(args.get("code"), str):               # run_code and anything like it: key facts, not the source
+        lang = str(args.get("language") or "code")
+        n = _lines(args["code"])
+        bits = [lang, f"{n} line{'' if n == 1 else 's'}"]
+        if args.get("stdin"):
+            bits.append(f"stdin {_lines(args['stdin'])} line{'' if _lines(args['stdin']) == 1 else 's'}")
+        return " · ".join(bits)[:limit]
     for key in ("url", "query", "expression"):
         if key in args:
             return str(args[key])[:limit]

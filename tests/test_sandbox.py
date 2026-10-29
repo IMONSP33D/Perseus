@@ -416,10 +416,38 @@ class RunCodeTool(unittest.TestCase):
         self.assertIn("(no output)", out["text"])
         self.assertIn("middle was cut", out["text"])
 
-    def test_outcome_label(self):
-        self.assertEqual(self.mod.outcome({"status": "ok", "exit_code": 0}), "program ok")
-        self.assertEqual(self.mod.outcome({"status": "runtime_error", "exit_code": 127}), "program failed · exit 127")
-        self.assertEqual(self.mod.outcome({"status": "timeout", "exit_code": None}), "program timed out")
+    def test_feed_card_shows_key_facts(self):
+        r = {"status": "runtime_error", "exit_code": 1, "stdout": "start\n", "network": "packages",
+             "stderr": "Traceback (most recent call last):\n  File \"main.py\", line 2\nKeyError: 'x'\n"}
+        v = self.mod.feed_view("python", "d = {}\nd['x']\n", "1 2\n", r)
+        self.assertEqual((v["pill"], v["tone"]), ("Program failed", "warn"))
+        self.assertEqual(v["summary"], "Python 3 · 2 lines · stdin 1 line")
+        self.assertEqual(v["headline"], "KeyError: 'x'")
+        self.assertEqual(v["detail"], "exit 1 · 1 line of output · network packages")
+        self.assertEqual(self.mod.feed_view("python", "x", "", {"status": "runtime_error", "exit_code": 2})["detail"],
+                         "exit 2")                                  # no "0 lines of output" noise
+        self.assertEqual([x["title"] for x in v["sections"]], ["Code · Python 3 · 2 lines", "stdin", "stdout", "stderr"])
+        self.assertEqual(v["sections"][0]["text"], "d = {}\nd['x']\n")       # the code as written, readable
+
+    def test_feed_badges_and_headlines(self):
+        cases = [({"status": "ok", "exit_code": 0, "stdout": "hi\n"}, "Program OK", None),
+                 ({"status": "compile_error", "exit_code": 1,
+                   "build": {"output": "warning: unused\nmain.c:3:5: error: expected ';'"}},
+                  "Didn't compile", "main.c:3:5: error: expected ';'"),
+                 ({"status": "timeout", "note": "the program ran past 30s and was stopped"}, "Timed out",
+                  "the program ran past 30s and was stopped"),
+                 ({"status": "runtime_error", "exit_code": 139, "note": "killed by signal 11: SIGSEGV"},
+                  "Program failed", "killed by signal 11: SIGSEGV")]
+        for r, pill, head in cases:
+            with self.subTest(status=r["status"]):
+                v = self.mod.feed_view("c", "int main(){}", "", r)
+                self.assertEqual((v["pill"], v["headline"]), (pill, head))
+
+    def test_card_view_is_returned_beside_the_text_for_the_model(self):
+        out = self.mod.run_code(self.ctx({"status": "ok", "exit_code": 0, "stdout": "hi\n", "stderr": ""}),
+                                "python", "print('hi')")
+        self.assertEqual(out["feed"]["pill"], "Program OK")
+        self.assertIn("stdout:\nhi", out["text"])
 
     def test_off_without_sandbox(self):
         with self.assertRaises(ToolFailure):
@@ -453,18 +481,28 @@ class EngineIntegration(unittest.TestCase):
         self.assertEqual((r.events[0].status, r.events[0].code), ("refused", "web_off"))
         self.assertNotIn("run_code", llm.seen[0]["tools"])
 
-    def test_feed_shows_the_program_outcome_not_as_an_http_status(self):
+    def test_card_view_goes_to_the_feed_never_to_the_model(self):
         reg = Registry()
 
         @tool(description="runs", registry=reg, requires="sandbox", untrusted=True,
-              parameters={"type": "object", "properties": {}})
-        def run_code(ctx):
-            return {"status": "runtime_error", "exit_code": 1, "outcome": "program failed · exit 1", "text": "x"}
+              parameters={"type": "object", "properties": {"language": {"type": "string"}, "code": {"type": "string"}},
+                          "required": ["language", "code"]})
+        def run_code(ctx, language, code):
+            return {"status": "runtime_error", "exit_code": 1, "text": "ran but failed",
+                    "feed": {"pill": "Program failed", "tone": "warn", "headline": "KeyError: 'x'",
+                             "sections": [{"title": "Code", "text": "SECRET-LOOKING CARD TEXT"}], "evil": "<script>"}}
         reg.provide("sandbox")
-        r = Engine(ScriptedLLM([call("run_code", {})], "done"), reg, ToolContext(), Feed()).run_turn([], "q")
+        llm = ScriptedLLM([call("run_code", {"language": "python", "code": "a\nb\nc"})], "done")
+        r = Engine(llm, reg, ToolContext(), Feed()).run_turn([], "q")
         ev = r.events[0]
-        self.assertIsNone(ev.http_status)
-        self.assertEqual(ev.outcome, "program failed · exit 1")
+        self.assertIsNone(ev.http_status)                              # "runtime_error" isn't an HTTP code
+        self.assertEqual((ev.feed["pill"], ev.feed["tone"]), ("Program failed", "warn"))
+        self.assertNotIn("evil", ev.feed)                              # only known fields survive
+        self.assertEqual(ev.summary, "python · 3 lines")              # not a JSON dump of the code
+        told = r.messages[2]["content"]
+        self.assertNotIn("SECRET-LOOKING CARD TEXT", told)            # the card costs the model nothing
+        self.assertNotIn('"feed"', told)
+        self.assertIn("ran but failed", told)
 
     def test_run_code_works_with_internet_access_off_at_every_level(self):
         from perseus.tools import run_code as mod   # the real built-in tool

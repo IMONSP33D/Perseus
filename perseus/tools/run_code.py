@@ -9,20 +9,70 @@ Output is untrusted data: a program can print text that looks like instructions.
 
 from __future__ import annotations
 
-from perseus.sandbox.languages import names
+from perseus.sandbox.languages import LANGUAGES, names
 from perseus.tools import ToolFailure, tool
 
 STATUS = {"ok": "ran successfully", "compile_error": "did not compile", "build_timeout": "build timed out",
           "runtime_error": "ran but failed", "timeout": "timed out"}
-# the short label on the tool feed card
-OUTCOME = {"ok": "program ok", "compile_error": "didn't compile", "build_timeout": "build timed out",
-           "runtime_error": "program failed", "timeout": "program timed out"}
+# the tool feed card: (badge, tone)
+PILL = {"ok": ("Program OK", ""), "runtime_error": ("Program failed", "warn"),
+        "compile_error": ("Didn't compile", "warn"), "timeout": ("Timed out", "warn"),
+        "build_timeout": ("Build timed out", "warn")}
 
 
-def outcome(r: dict) -> str:
-    label = OUTCOME.get(r.get("status"), str(r.get("status")))
-    code = r.get("exit_code")
-    return f"{label} · exit {code}" if code not in (None, 0) else label
+def _count(text: str) -> int:
+    return text.count("\n") + (0 if text.endswith("\n") else 1) if text else 0
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def headline(r: dict) -> str | None:
+    """The one line that says what happened: the error a program died with, or why it stopped."""
+    status = r.get("status")
+    if status in ("timeout", "build_timeout"):
+        return r.get("note")
+    if status == "compile_error":
+        lines = [ln.strip() for ln in ((r.get("build") or {}).get("output") or "").splitlines() if ln.strip()]
+        return next((ln for ln in lines if "error" in ln.lower()), lines[0] if lines else None)
+    if status == "runtime_error":
+        if r.get("note"):                    # killed by a signal: that's the story
+            return r["note"]
+        for stream in (r.get("stderr") or "", r.get("stdout") or ""):
+            lines = [ln.strip() for ln in stream.splitlines() if ln.strip()]
+            if lines:
+                return lines[-1]             # Python, Node and most runtimes end with the error itself
+    return None
+
+
+def feed_view(language: str, code: str, stdin: str, r: dict) -> dict:
+    """What the tool feed shows for this call (never sent to the model)."""
+    status = r.get("status", "ok")
+    pill, tone = PILL.get(status, (str(status), ""))
+    name = LANGUAGES[language].label.split(" (")[0] if language in LANGUAGES else language
+    summary = f"{name} · {_plural(_count(code), 'line')}"
+    if stdin:
+        summary += f" · stdin {_plural(_count(stdin), 'line')}"
+    detail = []
+    if r.get("exit_code") is not None:
+        detail.append(f"exit {r['exit_code']}")
+    out_lines = _count(r.get("stdout") or "")
+    if out_lines and status not in ("compile_error", "build_timeout"):
+        detail.append(_plural(out_lines, "line") + " of output")
+    if r.get("network") and r["network"] != "none":
+        detail.append(f"network {r['network']}")
+    sections = [{"title": f"Code · {name} · {_plural(_count(code), 'line')}", "text": code}]
+    if stdin:
+        sections.append({"title": "stdin", "text": stdin})
+    build = (r.get("build") or {}).get("output")
+    if build:
+        sections.append({"title": "Build output", "text": build})
+    for key in ("stdout", "stderr"):
+        if r.get(key):
+            sections.append({"title": key, "text": r[key]})
+    return {"pill": pill, "tone": tone, "summary": summary, "headline": headline(r),
+            "detail": " · ".join(detail), "sections": sections}
 
 
 def render(r: dict) -> str:
@@ -68,4 +118,4 @@ def run_code(ctx, language: str, code: str, stdin: str = ""):
     r = ctx.sandbox.run(language, code, stdin)
     text = render(r)
     return {"language": language, "status": r.get("status"), "exit_code": r.get("exit_code"),
-            "seconds": r.get("seconds"), "outcome": outcome(r), "text": text}
+            "seconds": r.get("seconds"), "text": text, "feed": feed_view(language, code, stdin, r)}

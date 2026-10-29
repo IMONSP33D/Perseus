@@ -410,13 +410,22 @@ textarea::placeholder { color: var(--placeholder); }
 .chip.warn { background: var(--warn-bg); color: var(--warn-fg); }
 .chip.run { background: var(--track); color: var(--muted); }
 .f-detail { font-size: 12px; color: var(--muted); }
+.f-headline { font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; color: var(--text); background: var(--track); padding: 6px 10px; border-radius: 8px; overflow-wrap: anywhere; }
+.f-headline.warn { color: var(--warn-fg); background: var(--warn-bg); }
+.f-headline.bad { color: var(--danger-fg); background: var(--danger-soft); }
+.f-more pre.f-code { max-height: 360px; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+.f-raw { margin-top: 10px; }
+.f-raw summary { cursor: pointer; font-size: 12px; color: var(--muted); list-style: none; }
+.f-raw summary::-webkit-details-marker { display: none; }
+.f-raw > summary::before { content: "▸ "; }
+.f-raw[open] > summary::before { content: "▾ "; }
 .f-reason { font-size: 13px; color: var(--danger-fg); line-height: 1.45; overflow-wrap: anywhere; }
 .f-warning { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; font-weight: 600; color: var(--warn-fg); background: var(--warn-bg); padding: 6px 10px; border-radius: 8px; line-height: 1.4; }
 .f-warning svg { flex: none; margin-top: 2px; }
 .f-more summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted); list-style: none; }
 .f-more summary::-webkit-details-marker { display: none; }
-.f-more summary::before { content: "▸ "; }
-.f-more[open] summary::before { content: "▾ "; }
+.f-more > summary::before { content: "▸ "; }
+.f-more[open] > summary::before { content: "▾ "; }
 .f-more pre { margin: 8px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--track); color: var(--text); font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow-y: auto; }
 .f-more h4 { margin: 10px 0 0; font-size: 12px; font-weight: 600; color: var(--muted); }
 

@@ -33,8 +33,11 @@ def feed_line(ev: ToolEvent) -> str:
         bits.append(f"{DIM}[{ev.lookup}]{RESET}")
     if ev.status in ("blocked", "refused", "error"):
         bits.append(f"{DIM}— {ev.status}: {ev.reason}{RESET}")
-    elif ev.outcome:
-        bits.append(f"{DIM}{ev.outcome} · {(ev.duration_ms or 0) / 1000:.1f}s{RESET}")
+    elif ev.feed and ev.feed.get("pill"):
+        extra = f" · {ev.feed['detail']}" if ev.feed.get("detail") else ""
+        bits.append(f"{DIM}{ev.feed['pill']}{extra} · {(ev.duration_ms or 0) / 1000:.1f}s{RESET}")
+        if ev.feed.get("headline"):
+            bits.append(f"{DIM}— {ev.feed['headline']}{RESET}")
     elif ev.http_status:
         bits.append(f"{DIM}{ev.http_status} · {(ev.bytes or 0) / 1024:.0f} KB · {(ev.duration_ms or 0) / 1000:.1f}s{RESET}")
     if ev.warning:

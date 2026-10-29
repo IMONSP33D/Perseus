@@ -448,15 +448,35 @@
     if (ev.status === 'running') return 'running…';
     const parts = [];
     if (ev.lookup) parts.push('lookup ' + ev.lookup);
-    if (ev.outcome) parts.push(ev.outcome);
+    if (ev.feed && ev.feed.detail) parts.push(ev.feed.detail);
     if (ev.http_status) parts.push(String(ev.http_status));
     if (ev.bytes) parts.push(kb(ev.bytes));
     if (ev.duration_ms != null) parts.push(secs(ev.duration_ms));
     return parts.join(' · ');
   }
 
+  // Details: a tool's own readable sections (run_code: code, stdin, stdout, stderr), then the raw text
+  // sent to the model; without sections, the raw arguments and result as before.
+  function feedDetails(ev, argsText) {
+    const f = ev.feed || {};
+    if (f.sections && f.sections.length) {
+      return h('details', { class: 'f-more' },
+        h('summary', {}, 'Details'),
+        ...f.sections.map((s) => [h('h4', { text: s.title }), h('pre', { class: 'f-code' }, s.text)]),
+        ev.result ? h('details', { class: 'f-raw' },
+          h('summary', {}, 'Raw text returned to the model'), h('pre', {}, ev.result)) : null);
+    }
+    return h('details', { class: 'f-more' },
+      h('summary', {}, 'Details'),
+      h('h4', { text: 'Arguments the model sent' }), h('pre', {}, argsText || '{}'),
+      ev.result ? [h('h4', { text: 'Returned to the model' }), h('pre', {}, ev.result)] : null);
+  }
+
   function feedCard(ev) {
-    const [label, tone] = STATUS[ev.status] || [ev.status, ''];
+    const f = ev.feed || {};
+    // the tool's own badge ("Program failed") when the call itself went through
+    let [label, tone] = STATUS[ev.status] || [ev.status, ''];
+    if (ev.status === 'ok' && f.pill) [label, tone] = [f.pill, f.tone || ''];
     const bad = ev.status === 'blocked' || ev.status === 'refused';
     const ic = ev.tool === 'web_search' ? 'search' : ev.tool === 'fetch_url' ? 'fetch' : 'tool';
     const argsText = typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args, null, 2);
@@ -465,16 +485,14 @@
         h('span', { class: 'f-icon' }, icon(ic)),
         h('span', { class: 'f-tool', text: ev.tool }),
         h('span', { class: 'f-time', text: clock(ev.started) })),
-      h('div', { class: 'f-arg', text: ev.summary || '' }),
+      h('div', { class: 'f-arg', text: f.summary || ev.summary || '' }),
+      f.headline ? h('div', { class: 'f-headline' + (tone ? ' ' + tone : ''), text: f.headline }) : null,
       ev.reason && ev.status !== 'ok' && ev.status !== 'cached' ? h('div', { class: 'f-reason', text: ev.reason }) : null,
       ev.warning ? h('div', { class: 'f-warning' }, icon('flag'), h('span', { text: ev.warning })) : null,
       h('div', { class: 'f-foot' },
         h('span', { class: 'chip' + (tone ? ' ' + tone : ''), text: label }),
         h('span', { class: 'f-detail', text: feedDetail(ev) })),
-      ev.status !== 'running' ? h('details', { class: 'f-more' },
-        h('summary', {}, 'Details'),
-        h('h4', { text: 'Arguments the model sent' }), h('pre', {}, argsText || '{}'),
-        ev.result ? [h('h4', { text: 'Returned to the model' }), h('pre', {}, ev.result)] : null) : null);
+      ev.status !== 'running' ? feedDetails(ev, argsText) : null);
   }
 
   function renderFeed() {
