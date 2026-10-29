@@ -427,35 +427,6 @@ Install the pre-commit hook once per clone. It blocks commits that contain token
 uvx pre-commit install
 ```
 
-## Status
-
-| Area | State |
-| --- | --- |
-| Boot: preflight, sizing, download, vLLM launch | Built; needs its first run on a real GPU |
-| Dashboard: streaming, auth, settings, raw view | Built; tested in a browser against a stand-in model |
-| Safe tool loop and web gateway | Built; gate tests pass |
-| Developer harness: hot-reload tools, export and replay | Built; parser fixtures need a real model |
-| Development pipelines | Format, validation and dashboard built; runner not started |
-
-<details>
-<summary><b>Checklist for the first real GPU run</b></summary>
-
-These were written against vLLM 0.32.0 and SearXNG without a GPU. Check each one once:
-
-- [ ] `vllm serve --help` still has every flag in `perseus/model/launch.py`, and `VLLM_API_KEY` is still read from the environment.
-- [ ] The parser names in `perseus/model/parsers.py` are valid choices.
-- [ ] Streamed reasoning arrives as `reasoning_content` or `reasoning` (`perseus/model/client.py` reads both).
-- [ ] `setup/driver.min` matches the CUDA runtime in torch 2.13.0.
-- [ ] SearXNG starts with `python -m searx.webapp` and answers `/healthz`.
-- [ ] Download progress counts Xet's in-progress bytes.
-- [ ] Measured KV-cache size is close to preflight's estimate; tune `RESERVE_*` if not.
-- [ ] Qwen3 honours `chat_template_kwargs.enable_thinking`, and gpt-oss honours `reasoning_effort`.
-- [ ] Close out on the real model starts its answer within a second or two and reads as a conclusion.
-- [ ] View raw renders the prompt with the model's own tokenizer.
-- [ ] Record three cold boots with `python3 perseus.py --timings`.
-
-</details>
-
 ## Secrets
 
 `perseus.toml` is git-ignored, kept at mode 600, and read only by preflight. `perseus.py` never loads the Hugging Face token, and the token is scrubbed from caches after the download. The pre-commit hook above blocks commits that contain tokens or the config file.
