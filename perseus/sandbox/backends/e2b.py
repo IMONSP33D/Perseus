@@ -15,7 +15,7 @@ import os
 import shlex
 import time
 
-from perseus.sandbox.backends import Capabilities, ExecResult, SandboxError, SessionSpec
+from perseus.sandbox.backends import Capabilities, ExecResult, SandboxError, SessionSpec, fingerprint
 from perseus.sandbox.network import PACKAGE_HOSTS
 
 WORKDIR = "/home/user/job"
@@ -44,9 +44,15 @@ def _translate(e: Exception) -> SandboxError:
     return SandboxError("backend", f"E2B error ({name})")
 
 
+# environment variables the E2B SDK honours that would point it somewhere else; logged if present
+SDK_ENV = ("E2B_DOMAIN", "E2B_API_URL", "E2B_SANDBOX_URL", "E2B_DEBUG", "E2B_API_KEY")
+
+
 class E2BSession:
     def __init__(self, sbx):
         self.sbx = sbx
+        self.id = str(getattr(sbx, "sandbox_id", "") or "?")
+        self.killed: bool | None = None
         self._closed = False
 
     def write_file(self, path: str, content: str) -> None:
@@ -84,9 +90,9 @@ class E2BSession:
             return
         self._closed = True
         try:
-            self.sbx.kill()
+            self.killed = bool(self.sbx.kill())
         except Exception:
-            pass   # the sandbox's own lifetime timeout destroys it anyway
+            self.killed = False   # the sandbox's own lifetime timeout destroys it anyway
 
 
 class E2BBackend:
@@ -98,7 +104,27 @@ class E2BBackend:
         except ImportError:
             raise SandboxError("config", "the e2b package isn't installed (bash preflight.sh installs it)")
         self.key = read_key(settings, environ)
+        self.key_source = ("perseus.toml [secrets] code_runner_api_key" if (settings.get("api_key") or "").strip()
+                           else "E2B_API_KEY environment variable")
         self.template = (settings.get("e2b_template") or "").strip() or None
+        self.environ = environ
+
+    def describe(self) -> dict:
+        from importlib.metadata import version
+        from e2b.connection_config import ConnectionConfig
+        try:
+            cfg = ConnectionConfig(api_key=self.key)
+            api_url, domain = cfg.api_url, cfg.domain
+        except Exception as e:
+            api_url, domain = f"(unknown: {type(e).__name__})", "?"
+        try:
+            sdk = version("e2b")
+        except Exception:
+            sdk = "?"
+        return {"provider": "e2b", "sdk": sdk, "api_url": api_url, "domain": domain,
+                "key": fingerprint(self.key), "key_source": self.key_source,
+                "template": self.template or "E2B default",
+                "env_overrides": [n for n in SDK_ENV if self.environ.get(n)]}
 
     def capabilities(self) -> Capabilities:
         return Capabilities(os="linux", controls_network=True, max_lifetime_s=3600,

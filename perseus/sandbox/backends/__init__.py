@@ -65,6 +65,8 @@ class Capabilities:
 
 # ---------------------------------------------------------------- protocol
 class Session(Protocol):
+    id: str                     # the provider's own id for this sandbox (E2B: sandbox_id), for logs and lookups
+
     def write_file(self, path: str, content: str) -> None:
         """Write `content` to `path`, relative to the job folder."""
 
@@ -82,8 +84,20 @@ class Backend(Protocol):
 
     def capabilities(self) -> Capabilities: ...
 
+    def describe(self) -> dict:
+        """Who and where: provider, API host, SDK version, key fingerprint and source. Never the key."""
+
     def open(self, spec: SessionSpec) -> Session:
         """A fresh sandbox with an empty job folder and no credentials or host environment."""
+
+
+def fingerprint(key: str) -> str:
+    """Enough of a key to match it against the provider's dashboard, never enough to use it."""
+    key = key.strip()
+    if len(key) < 12:
+        return "(too short to show)"
+    prefix = key[:4] if key[3:4] == "_" else key[:2]
+    return f"{prefix}…{key[-4:]}"
 
 
 def config_secret(config_path: str) -> str:
