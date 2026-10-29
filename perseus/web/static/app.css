@@ -80,7 +80,7 @@ textarea::placeholder { color: var(--placeholder); }
 
 /* ---------------------------------------------------------------- sidebar */
 .side-head { display: flex; align-items: center; min-height: 72px; padding: 0 20px; border-bottom: 1px solid var(--divider); }
-.logo-text { height: 28px; width: auto; display: block; filter: var(--logo-filter); }
+.logo-text { height: 40px; width: auto; max-width: 100%; display: block; filter: var(--logo-filter); }
 .side-new { padding: 20px 20px 0; }
 .btn-primary {
   display: flex; align-items: center; justify-content: center; gap: 8px; border: none; border-radius: 12px;
