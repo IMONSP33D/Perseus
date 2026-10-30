@@ -36,6 +36,7 @@ class ToolEvent:
     warning: str | None = None      # e.g. instruction-like phrases found in a page
     lookup: str | None = None       # "7 of 20"
     feed: dict | None = None        # a tool's own card view (see clean_feed); shown in the feed, never sent to the model
+    file: dict | None = None        # a file the tool handed the user (see clean_file); shown in the chat, never sent to the model
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -118,6 +119,32 @@ def clean_feed(view: Any) -> dict | None:
     return out
 
 
+FILE_MAX_CHARS = 500_000
+
+
+def clean_file(f: Any) -> dict | None:
+    """A file a tool handed the user (output_file): name, type and the text itself, sizes capped.
+
+        name         flat file name, e.g. "notes.md"
+        content      the complete text of the file
+        mime         its MIME type, used for the download
+        language     a label for the preview, e.g. "python"
+        description  an optional one-line note for the file card
+    """
+    if not isinstance(f, dict) or not isinstance(f.get("name"), str) or not isinstance(f.get("content"), str):
+        return None
+    name = f["name"].replace("/", "_").replace("\\", "_").strip()[:120]
+    if not name:
+        return None
+    content = f["content"][:FILE_MAX_CHARS]
+    out = {"name": name, "content": content, "bytes": len(content.encode("utf-8")), "lines": _lines(content)}
+    for key, cap in (("mime", 80), ("language", 40), ("description", 200)):
+        if isinstance(f.get(key), str) and f[key].strip():
+            out[key] = f[key].strip()[:cap]
+    out.setdefault("mime", "text/plain")
+    return out
+
+
 def _lines(text: str) -> int:
     return text.count("\n") + (0 if text.endswith("\n") else 1) if text else 0
 
@@ -132,7 +159,7 @@ def summarize_args(tool: str, args: Any, limit: int = 120) -> str:
         if args.get("stdin"):
             bits.append(f"stdin {_lines(args['stdin'])} line{'' if _lines(args['stdin']) == 1 else 's'}")
         return " · ".join(bits)[:limit]
-    for key in ("url", "query", "expression"):
+    for key in ("url", "query", "expression", "filename"):
         if key in args:
             return str(args[key])[:limit]
     return json.dumps(args, ensure_ascii=False)[:limit]

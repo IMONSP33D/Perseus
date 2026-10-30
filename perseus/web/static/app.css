@@ -251,6 +251,30 @@ textarea::placeholder { color: var(--placeholder); }
 .md-table th { background: var(--track); font-weight: 600; }
 .md-table tr:last-child td { border-bottom: none; }
 .cursor { display: inline-block; width: 8px; height: 1.05em; vertical-align: text-bottom; background: var(--primary); margin-left: 2px; animation: pulse 1s steps(2) infinite; }
+.files { display: flex; flex-direction: column; gap: 8px; }
+.file-card { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); overflow: hidden; }
+.file-head { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 14px; }
+.file-icon { width: 20px; height: 20px; flex: none; color: var(--muted); }
+.file-info { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.file-name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-meta { font-size: 12px; color: var(--muted); }
+.file-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.file-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 13px; font-weight: 600;
+  text-decoration: none; cursor: pointer; white-space: nowrap;
+}
+.file-btn:hover { background: var(--track); }
+.file-btn svg { flex: none; width: 14px; height: 14px; }
+.file-desc { margin: 0; padding: 0 14px 10px 46px; font-size: 13px; color: var(--muted); }
+.file-preview { padding: 0 10px 10px; }
+.file-preview .code { max-height: 420px; overflow: auto; }
+@media (max-width: 560px) {
+  .file-head { flex-wrap: wrap; }
+  .file-actions { width: 100%; justify-content: flex-start; padding-left: 32px; }
+  .file-btn span { display: none; }
+  .file-desc { padding-left: 14px; }
+}
 .msg-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 13px; color: var(--muted); }
 .msg-foot .err { color: var(--danger-fg); font-weight: 600; }
 .msg-foot .warn { color: var(--warn-fg); font-weight: 600; }

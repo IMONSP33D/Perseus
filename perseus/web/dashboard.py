@@ -91,9 +91,17 @@ class Chat:
 
 def event_dict(ev: ToolEvent) -> dict:
     d = ev.to_dict()
+    if isinstance(d.get("file"), dict):
+        d["file"] = file_summary(ev)        # the content is fetched on demand: /api/chats/<id>/files/<event id>
     if isinstance(d.get("result"), str) and len(d["result"]) > 20_000:
         d["result"] = d["result"][:20_000] + " …"
     return d
+
+
+def file_summary(ev: ToolEvent) -> dict:
+    """A file card as the dashboard lists it: everything but the content."""
+    f = ev.file or {}
+    return {"id": ev.id, **{k: v for k, v in f.items() if k != "content"}}
 
 
 @dataclass
@@ -326,7 +334,7 @@ class Dashboard:
                "limit": opts.lookup_limit, "usage": {}, "stopped": False, "error": None,
                "phase": "thinking", "closed": None, "truncated": False,
                "turn": chat.engine._turn + 1,     # run_turn numbers this answer next; the feed groups by it
-               "think_used": 0, "think_budget": opts.think_tokens}
+               "think_used": 0, "think_budget": opts.think_tokens, "files": []}
         if not chat.messages:
             chat.title = " ".join(text.split())[:48] or "New chat"
         chat.messages += [user_msg, msg]
@@ -366,6 +374,10 @@ class Dashboard:
             if ev.status != "running" and ev.id not in msg["tool_ids"]:
                 msg["tool_ids"].append(ev.id)
             q.put({"type": "tool", "event": event_dict(ev)})
+            if ev.status == "ok" and ev.file and all(f["id"] != ev.id for f in msg["files"]):
+                card = file_summary(ev)
+                msg["files"].append(card)
+                q.put({"type": "file", "file": card})
 
         unsubscribe = chat.feed.subscribe(on_event)
 
@@ -402,6 +414,18 @@ class Dashboard:
         if not chat.busy:
             raise BadRequest("nothing to close out: this chat isn't answering")
         chat.engine.close_out()
+
+    def file(self, cid: str, event_id: str) -> dict:
+        """A file a tool handed the user in this chat (output_file), with its content."""
+        chat = self.get(cid)
+        try:
+            n = int(event_id)
+        except ValueError:
+            raise KeyError(event_id)
+        ev = next((e for e in chat.feed.events if e.id == n and e.status == "ok" and e.file), None)
+        if ev is None:
+            raise KeyError(event_id)
+        return ev.file
 
     # ------------------------------------------------------------------ raw view, export
     def raw(self, cid: str, mid: str) -> dict:

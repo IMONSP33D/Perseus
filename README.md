@@ -297,7 +297,9 @@ def word_count(ctx, text: str):
 - Mark web-reading tools `lookup=True`, so they count toward research depth and their results are labelled untrusted.
 - A tool that needs an engine capability declares it, e.g. `requires="sandbox"`. It's hidden from the model and the dashboard until that capability is up. `untrusted=True` labels a non-web tool's output as untrusted.
 
-Built-in tools: `calculator`, `current_time`, `web_search`, `fetch_url` and `run_code` (when the code runner is on).
+Built-in tools: `calculator`, `current_time`, `web_search`, `fetch_url`, `output_file` and `run_code` (when the code runner is on).
+
+`output_file` hands the user a file (Markdown, source code, CSV, …) instead of putting it in the answer. It writes nothing to disk: the file travels on the tool event, the dashboard shows it as a card under the answer with Preview, Copy and Download, and the model is told only that it was delivered. Downloads are served from `/api/chats/<id>/files/<event id>` as attachments, so an HTML or SVG file never runs in the dashboard. Files live with the chat in memory and are included in the export.
 
 ## Code runner
 

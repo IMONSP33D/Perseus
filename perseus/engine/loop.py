@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from perseus.engine.feed import Feed, ToolEvent, clean_feed, summarize_args
+from perseus.engine.feed import Feed, ToolEvent, clean_feed, clean_file, summarize_args
 from perseus.model.thinksplit import RETRACT
 from perseus.safety.gateway import GatewayError
 from perseus.safety.netpolicy import Blocked
@@ -403,6 +403,12 @@ class Engine:
             view = clean_feed(result.pop("feed"))
             if view:
                 meta["feed"] = view
+        if isinstance(result, dict) and "file" in result:
+            # a file for the user (output_file): shown in the chat as a download, never part of what the model is told
+            result = dict(result)
+            handed = clean_file(result.pop("file"))
+            if handed:
+                meta["file"] = handed
         if isinstance(result, dict):
             meta.update({k: v for k, v in (("url", result.get("url")), ("http_status", result.get("status"))) if v})
             if not isinstance(meta.get("http_status"), int) or isinstance(meta.get("http_status"), bool):
