@@ -403,6 +403,63 @@
     if (jump) jump.hidden = follow || thinkAtEnd(box);    // nothing below to jump to: never shown
   }
 
+  // Files the model handed over with output_file: a card each, under the answer.
+  // The content is fetched on demand and only ever shown as text (Preview) or downloaded.
+  const fileUrl = (cid, f) => `/api/chats/${encodeURIComponent(cid)}/files/${encodeURIComponent(f.id)}`;
+  async function fileContent(cid, f) {
+    const key = cid + ':' + f.id;
+    if (typeof ui.fileText[key] === 'string') return ui.fileText[key];
+    const r = await fetch(fileUrl(cid, f), { credentials: 'same-origin' });
+    if (!r.ok) throw new Error(r.status === 404 ? 'file not found' : r.statusText);
+    return (ui.fileText[key] = await r.text());
+  }
+  function fileList(m) {
+    const c = active();
+    if (!c) return null;
+    return h('div', { class: 'files' }, m.files.map((f) => fileCard(c.id, m, f)));
+  }
+  function fileCard(cid, m, f) {
+    const key = cid + ':' + f.id;
+    const open = !!ui.fileOpen[key];
+    const meta = [f.language && f.language !== 'text' ? f.language : null,
+      f.lines != null ? `${f.lines} line${f.lines === 1 ? '' : 's'}` : null,
+      f.bytes != null ? fileSize(f.bytes) : null].filter(Boolean).join(' · ');
+    const copyBtn = h('button', { type: 'button', class: 'file-btn', 'aria-label': `Copy ${f.name}` }, icon('copy'), h('span', { text: 'Copy' }));
+    copyBtn.addEventListener('click', async () => {
+      let ok = false;
+      try { ok = await copyText(await fileContent(cid, f)); } catch (e) { banner(e.message); }
+      copyBtn.replaceChildren(icon(ok ? 'check' : 'x'), h('span', { text: ok ? 'Copied' : 'Copy failed' }));
+      clearTimeout(copyBtn._t);
+      copyBtn._t = setTimeout(() => copyBtn.replaceChildren(icon('copy'), h('span', { text: 'Copy' })), 1600);
+    });
+    const previewBtn = h('button', { type: 'button', class: 'file-btn', 'aria-expanded': String(open),
+      'aria-label': `${open ? 'Hide' : 'Preview'} ${f.name}`,
+      onclick: async () => {
+        ui.fileOpen[key] = !open;
+        if (!open && typeof ui.fileText[key] !== 'string') {
+          try { await fileContent(cid, f); } catch (e) { ui.fileText[key] = { error: e.message }; }
+        }
+        replaceMessage(m);
+      } }, icon('eye'), h('span', { text: open ? 'Hide' : 'Preview' }));
+    const download = h('a', { class: 'file-btn', href: fileUrl(cid, f), download: f.name, 'aria-label': `Download ${f.name}` },
+      icon('download'), h('span', { text: 'Download' }));
+    const text = ui.fileText[key];
+    const preview = !open ? null
+      : typeof text === 'string' ? h('div', { class: 'file-preview' }, codeBlock(text, f.language))
+      : text && text.error ? h('p', { class: 'note-warn', text: `Couldn't load the file: ${text.error}` })
+      : h('p', { class: 'waiting', text: 'Loading…' });
+    const fileIcon = icon('file'); fileIcon.classList.add('file-icon');
+    return h('div', { class: 'file-card' },
+      h('div', { class: 'file-head' },
+        fileIcon,
+        h('div', { class: 'file-info' },
+          h('span', { class: 'file-name', text: f.name }),
+          meta ? h('span', { class: 'file-meta', text: meta }) : null),
+        h('div', { class: 'file-actions' }, previewBtn, copyBtn, download)),
+      f.description ? h('p', { class: 'file-desc', text: f.description }) : null,
+      preview);
+  }
+
   function footer(m) {
     const bits = [];
     if (m.error) bits.push(h('span', { class: 'err', text: m.error }));
