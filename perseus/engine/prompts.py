@@ -24,6 +24,10 @@ def system_prompt(tool_names: list[str], depth_limit: int, untrusted: bool | Non
     if tool_names:
         lines.append(f"You can call these tools: {', '.join(sorted(tool_names))}. Call a tool only when it helps; "
                      "use the exact argument names in its schema.")
+    if "output_file" in tool_names:
+        lines.append("When the user asks for a file, or wants Markdown or code as raw text rather than rendered in "
+                     "the chat, deliver it with output_file (one call per file) and say in a sentence what you "
+                     "made; don't paste the same content into your answer.")
     if web:
         lines += [
             f"Web access is read-only and limited to {depth_limit} lookups (searches plus page reads) per answer. "

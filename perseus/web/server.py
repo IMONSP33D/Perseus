@@ -308,9 +308,21 @@ class _Handler(BaseHTTPRequestHandler):
             if method == "POST" and rest == ("closeout",):
                 d.close_out(cid)
                 return self._json(200, {"closing": True})
+            if method == "GET" and len(rest) == 2 and rest[0] == "files":
+                return self._file(d.file(cid, rest[1]))
             if method == "GET" and len(rest) == 2 and rest[0] == "raw":
                 return self._json(200, d.raw(cid, rest[1]))
         return self._error(404, "not found")
+
+    def _file(self, f: dict):
+        """A file the model handed over: always a download (never rendered here), so an HTML or SVG
+        file can't run in the dashboard's origin. The dashboard reads it with fetch() for previews."""
+        name = re.sub(r'[^A-Za-z0-9._\- ]', "_", f["name"]) or "file.txt"
+        mime = f.get("mime") or "text/plain"
+        if not re.fullmatch(r"[a-z]+/[a-z0-9.+\-]+", mime):
+            mime = "text/plain"
+        self._send(200, f["content"].encode("utf-8"), f"{mime}; charset=utf-8",
+                   {"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
     def _apply_context(self, tokens):
         try:
