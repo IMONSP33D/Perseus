@@ -464,11 +464,6 @@ textarea::placeholder { color: var(--placeholder); }
 .nav-text { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 6px 0; }
 .nav-caption { font-size: 12px; font-weight: 500; color: var(--muted); }
 .nav-item.active .nav-caption { color: inherit; opacity: .8; }
-.nav-sub { padding-left: 40px; }
-.nav-sub::before {   /* elbow from the parent item's icon */
-  content: ""; position: absolute; left: 21px; top: -6px; width: 12px; height: 28px;
-  border-left: 2px solid var(--divider); border-bottom: 2px solid var(--divider); border-bottom-left-radius: 8px;
-}
 .nav-count {
   flex: none; min-width: 24px; height: 22px; padding: 0 7px; border-radius: 999px; background: var(--track);
   color: var(--muted); font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center;
