@@ -9,19 +9,17 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from perseus import EXAMPLE_PATH, ROOT
+from perseus import ROOT
 from perseus.config import ConfigError, Paths, find_paths, load_resolved, pointer_path, record_data_dir
 from setup import check_config
+from tests.configs import config_dir
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 def config_in(folder: Path, data_dir: str = "auto") -> Path:
-    text = (EXAMPLE_PATH.read_text().replace('"org/model-name"', '"Qwen/Qwen2.5-32B-Instruct-AWQ"')
-            .replace('data_dir = "auto"', f'data_dir = "{data_dir}"'))
-    cfg = folder / "perseus.toml"
-    cfg.write_text(text)
-    return cfg
+    return config_dir(('data_dir = "auto"', f'data_dir = "{data_dir}"'), parent=folder,
+                      model="Qwen/Qwen2.5-32B-Instruct-AWQ")
 
 
 def run_check(cfg: Path, *extra) -> tuple[int, str]:
@@ -65,7 +63,7 @@ class DataDir(unittest.TestCase):
         self.assertIn("run bash preflight.sh", e.exception.problems[0])
         data = self.tmp / "data"
         data.mkdir()
-        self.assertEqual(record_data_dir(cfg, data), self.tmp / ".perseus-data")
+        self.assertEqual(record_data_dir(cfg, data), cfg / ".perseus-data")    # inside Config/
         self.assertEqual(find_paths(cfg).data, data.resolve())
         self.assertEqual(find_paths(cfg, self.tmp).data, self.tmp.resolve())   # --data wins
         data.rmdir()

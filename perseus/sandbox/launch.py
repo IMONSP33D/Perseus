@@ -28,7 +28,7 @@ def plan(cfg: dict, environ, config_path: str = "") -> Plan:
     """Decide whether to start the broker. Always removes E2B_API_KEY from `environ` (this process's
     environment), so tools, vLLM and SearXNG never inherit it; only the broker gets it back.
 
-    The key itself lives in perseus.toml ([secrets] code_runner_api_key). Perseus only learns from
+    The key itself lives in Config/tooling.toml ([code_runner] api_key). Perseus only learns from
     preflight *whether* one is set (api_key_set); the broker reads the value from `config_path`."""
     env_key = (environ.pop(KEY_ENV, "") or "").strip()
     if not cfg:
@@ -48,7 +48,7 @@ def plan(cfg: dict, environ, config_path: str = "") -> Plan:
     elif env_key:
         env[KEY_ENV] = env_key
     else:
-        return Plan(False, "off (no [secrets] code_runner_api_key in perseus.toml; add it, then run bash preflight.sh)")
+        return Plan(False, "off (no [code_runner] api_key in Config/tooling.toml; add it, then run bash preflight.sh)")
     env["PERSEUS_SANDBOX_SETTINGS"] = json.dumps(settings)
     return Plan(True, f"starting ({backend})", env)
 

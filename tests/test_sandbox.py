@@ -251,15 +251,15 @@ class Launch(unittest.TestCase):
         self.assertEqual(env, {})
 
     def test_no_key_means_off_with_a_reason(self):
-        p = launch.plan(self.cfg, {}, "/home/u/Perseus/perseus.toml")
+        p = launch.plan(self.cfg, {}, "/home/u/Perseus/Config")
         self.assertFalse(p.start)
-        self.assertIn("[secrets] code_runner_api_key", p.reason)
+        self.assertIn("[code_runner] api_key in Config/tooling.toml", p.reason)
 
-    def test_key_in_perseus_toml_is_passed_by_config_path_never_read(self):
-        p = launch.plan({**self.cfg, "api_key_set": True}, {}, "/home/u/Perseus/perseus.toml")
+    def test_key_in_tooling_toml_is_passed_by_config_path_never_read(self):
+        p = launch.plan({**self.cfg, "api_key_set": True}, {}, "/home/u/Perseus/Config")
         self.assertTrue(p.start, p.reason)
         settings = json.loads(p.env["PERSEUS_SANDBOX_SETTINGS"])
-        self.assertEqual(settings["config_path"], "/home/u/Perseus/perseus.toml")
+        self.assertEqual(settings["config_path"], "/home/u/Perseus/Config")
         self.assertNotIn("api_key_set", settings)
         self.assertNotIn("E2B_API_KEY", p.env)
 
@@ -544,7 +544,7 @@ class Config(unittest.TestCase):
 
     def test_old_keys_say_what_replaced_them(self):
         for key, value, needle in (("internet", False, 'network = "none", "packages" or "full"'),
-                                   ("key_file", "/x", "[secrets] code_runner_api_key")):
+                                   ("key_file", "/x", "[code_runner] api_key")):
             with self.subTest(key=key), self.assertRaises(ConfigError) as c:
                 validate_config({**self.base, "code_runner": {key: value}})
             self.assertIn(needle, " ".join(c.exception.problems))
@@ -560,23 +560,26 @@ class Config(unittest.TestCase):
             self.assertIn(needle, " ".join(c.exception.problems))
 
     def test_section_reaches_the_resolved_file_but_the_key_never_does(self):
-        cfg = validate_config({**self.base, "secrets": {"code_runner_api_key": "e2b_" + "a" * 40},
-                               "code_runner": {"e2b_template": "perseus-code"}})
-        self.assertEqual(cfg["secrets"]["code_runner_api_key"], "e2b_" + "a" * 40)
+        cfg = validate_config({**self.base, "code_runner": {"api_key": "e2b_" + "a" * 40,
+                                                            "e2b_template": "perseus-code"}})
+        self.assertEqual(cfg["code_runner"]["api_key"], "e2b_" + "a" * 40)
         self.assertEqual(cfg.public()["code_runner"]["e2b_template"], "perseus-code")
-        self.assertNotIn("e2b_" + "a" * 40, json.dumps(cfg.public()))     # [secrets] stays out of resolved
+        self.assertNotIn("e2b_" + "a" * 40, json.dumps(cfg.public()))     # the key stays out of resolved
 
-    def test_key_sits_next_to_hf_token_like_it(self):
-        cfg = validate_config({**self.base, "secrets": {"code_runner_api_key": "e2b_..."}})   # the placeholder
-        self.assertEqual(cfg["secrets"]["code_runner_api_key"], "")
-        self.assertTrue(any("code_runner_api_key" in w for w in cfg.warnings))
+    def test_key_sits_in_the_tools_own_section(self):
+        cfg = validate_config({**self.base, "code_runner": {"api_key": "e2b_..."}})   # the placeholder
+        self.assertEqual(cfg["code_runner"]["api_key"], "")
+        self.assertTrue(any("[code_runner] api_key" in w for w in cfg.warnings))
         with self.assertRaises(ConfigError) as c:
-            validate_config({**self.base, "secrets": {"code_runner_api_key": "e2b_abc def"}})
+            validate_config({**self.base, "code_runner": {"api_key": "e2b_abc def"}})
         problems = " ".join(c.exception.problems)
         self.assertIn("no spaces", problems)
         self.assertNotIn("e2b_abc", problems)                              # secrets are never echoed
         quiet = validate_config({**self.base, "code_runner": {"enabled": False}})
-        self.assertFalse(any("code_runner_api_key" in w for w in quiet.warnings))
+        self.assertFalse(any("api_key" in w for w in quiet.warnings))
+        with self.assertRaises(ConfigError) as c:                          # the pre-split location
+            validate_config({**self.base, "secrets": {"code_runner_api_key": "e2b_x"}})
+        self.assertIn("moved to [code_runner] api_key", " ".join(c.exception.problems))
 
     def test_key_file_is_gone(self):
         with self.assertRaises(ConfigError):
@@ -698,13 +701,23 @@ class E2BBackendStub(unittest.TestCase):
     def test_key_sources(self):
         with self.assertRaises(SandboxError) as c:
             self.mod.read_key({}, {})
-        self.assertIn("[secrets] code_runner_api_key", str(c.exception))
+        self.assertIn("[code_runner] api_key in Config/tooling.toml", str(c.exception))
         self.assertEqual(self.mod.read_key({"api_key": " from-toml "}, {"E2B_API_KEY": "env"}), "from-toml")
         self.assertEqual(self.mod.read_key({"api_key": ""}, {"E2B_API_KEY": "env"}), "env")
 
-    def test_broker_reads_the_key_from_perseus_toml(self):
+    def test_broker_reads_the_key_from_tooling_toml_only(self):
         from perseus.sandbox.backends import config_secret
         with tempfile.TemporaryDirectory() as d:
+            folder = Path(d) / "Config"
+            folder.mkdir()
+            (folder / "provider.toml").write_text('[secrets]\nhf_token = "hf_x"\n')
+            (folder / "tooling.toml").write_text('[code_runner]\napi_key = "e2b_k"\n')
+            with mock.patch("pathlib.Path.read_text", autospec=True, side_effect=Path.read_text) as reads:
+                self.assertEqual(config_secret(str(folder)), "e2b_k")
+            self.assertEqual([c.args[0].name for c in reads.call_args_list], ["tooling.toml"])  # never provider
+            (folder / "tooling.toml").write_text('[code_runner]\napi_key = "e2b_..."\n')
+            self.assertEqual(config_secret(str(folder)), "")
+        with tempfile.TemporaryDirectory() as d:                         # a single, pre-split perseus.toml
             toml = Path(d) / "perseus.toml"
             toml.write_text('[model]\nid = "org/m"\n\n[secrets]\nhf_token = "hf_x"\ncode_runner_api_key = "e2b_k"\n')
             self.assertEqual(config_secret(str(toml)), "e2b_k")

@@ -1,6 +1,6 @@
 """Download exactly the planned files with the Xet parallel downloader.
 
-    python3 -m setup.download [--config perseus.toml]     (preflight.sh runs this as its last step)
+    python3 -m setup.download [--config Config]     (preflight.sh runs this as its last step)
 
 Reads the plan `check` wrote to <data>/run/download-plan.json and fetches into
 <data>/weights/<org>/<model>/. Progress (bytes, MB/s, ETA) goes to the terminal

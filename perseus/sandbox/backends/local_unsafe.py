@@ -5,7 +5,7 @@ It exists so the conformance suite can exercise the real broker -> runner ->
 backend path on a laptop or CI runner without a provider account.
 
 It refuses to start unless PERSEUS_UNSAFE_LOCAL_SANDBOX=1 is set, it can never
-be selected in perseus.toml (see backends.CONFIGURABLE), and it only runs when
+be selected in tooling.toml (see backends.CONFIGURABLE), and it only runs when
 it can cut the network with a user+network namespace (`unshare -rn`).
 """
 

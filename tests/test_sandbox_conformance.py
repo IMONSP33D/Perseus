@@ -2,8 +2,8 @@
 
   local_unsafe  runs when `unshare -rn` works (Linux with user namespaces): exercises the full
                 runner path with real compilers, no account needed. Never a production backend.
-  e2b           runs only with PERSEUS_TEST_E2B=1; the key comes from [secrets] code_runner_api_key
-                in ./perseus.toml (or E2B_API_KEY), the template from [code_runner] e2b_template
+  e2b           runs only with PERSEUS_TEST_E2B=1; the key comes from [code_runner] api_key
+                in ./Config/tooling.toml (or E2B_API_KEY), the template from [code_runner] e2b_template
                 (or PERSEUS_TEST_E2B_TEMPLATE). Costs a few cents.
 """
 
@@ -25,9 +25,9 @@ class E2BConformance(Conformance, unittest.TestCase):
     def make_backend(self):
         import tomllib
         from pathlib import Path
-        from perseus.sandbox.backends import config_secret
+        from perseus.sandbox.backends import config_secret, tooling_file
         from perseus.sandbox.backends.e2b import E2BBackend
-        toml = Path("perseus.toml")
+        toml = tooling_file("Config")
         template = os.environ.get("PERSEUS_TEST_E2B_TEMPLATE", "")
         if toml.is_file() and not template:
             template = (tomllib.loads(toml.read_text()).get("code_runner") or {}).get("e2b_template", "")

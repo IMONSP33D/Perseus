@@ -54,7 +54,7 @@ class SingleGPU(unittest.TestCase):
         on = resolve(box(1, **RTX4090), llama31_8b(), cfg(small_gpu=True))
         self.assertEqual(on.kv_cache_dtype, "fp8")
         self.assertAlmostEqual(on.context_capacity / off.context_capacity, 2, delta=0.01)
-        self.assertEqual(on.small_gpu_reason, "forced on in perseus.toml")
+        self.assertEqual(on.small_gpu_reason, "forced on in Config/settings.toml")
 
     def test_32b_awq_on_24gb_fits_with_small_profile(self):
         r = resolve(box(1, **RTX4090), qwen25_32b_awq(), cfg())

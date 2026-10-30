@@ -132,11 +132,11 @@ def explain_crash(log_text: str, r: dict) -> list[str]:
             return [f"vLLM had room for only {limit} parallel requests' state on this hybrid model",
                     "Perseus retries with that limit automatically; one user needs far fewer"]
         return [f"no room for this hybrid model's state cache at context {r['vllm']['max_model_len']:,}",
-                "set [model] max_context lower in perseus.toml, then re-run bash preflight.sh --check"]
+                "set [model] max_context lower in Config/settings.toml, then re-run bash preflight.sh --check"]
     if "no available memory for the cache blocks" in low or "larger than the available kv cache memory" in low \
             or "max seq len" in low and "kv cache" in low:
         return [f"the weights fit but there is no room left for a {r['vllm']['max_model_len']:,}-token KV cache",
-                "set [model] max_context lower in perseus.toml (or smaller weights), "
+                "set [model] max_context lower in Config/settings.toml (or smaller weights), "
                 "then re-run bash preflight.sh --check"]
     from perseus.supervisor import root_cause
     cause = root_cause(log_text).lower()      # only the real error line: "fp8" is all over a normal log
@@ -148,7 +148,7 @@ def explain_crash(log_text: str, r: dict) -> list[str]:
                 "unset VLLM_USE_FLASHINFER_SAMPLER (Perseus sets it to 0), or install the CUDA toolkit"]
     if any(m in log_text for m in OOM_MARKERS):
         return [f"vLLM ran out of GPU memory at context {r['vllm']['max_model_len']:,}",
-                "set [model] max_context lower in perseus.toml, or smaller weights (quantization), "
+                "set [model] max_context lower in Config/settings.toml, or smaller weights (quantization), "
                 "then re-run bash preflight.sh --check"]
     if "parser" in low and "invalid choice" in low:
         return ["vLLM rejected the tool or reasoning parser name",
@@ -177,7 +177,7 @@ def tool_call_check(llm: LLMClient, parser: str) -> tuple[bool, str]:
         return True, f"get_time() parsed by the {parser} parser"
     snippet = (reply.content or "").strip().replace("\n", " ")[:160]
     return False, (f"the call wasn't parsed by the {parser!r} parser; model replied: {snippet or '(empty)'}. "
-                   "Set [model] tool_parser in perseus.toml")
+                   "Set [model] tool_parser in Config/settings.toml")
 
 
 def precision_label(v: dict) -> str:

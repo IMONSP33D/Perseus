@@ -3,9 +3,10 @@
 # preflight.sh — get a fresh Linux GPU box ready for Perseus.
 #
 # Order is chosen so failures cost seconds, not a 400 GB download:
-#   1. config file + driver version          (seconds)
+#   1. driver version                        (seconds)
 #   2. uv + base Python env                  (seconds)
-#   3. config, hardware, Hub and sizing check (seconds, no weights fetched);
+#   3. config files created or updated from Config/templates (your values kept),
+#      then config, hardware, Hub and sizing check (seconds, no weights fetched);
 #      picks the data directory on the fastest disk and records it
 #   4. vLLM install + GPU smoke test         (minutes)
 #   5. SearXNG install                       (a minute)
@@ -14,17 +15,22 @@
 # Usage:
 #   bash preflight.sh                    full run (safe to re-run; finished steps are skipped)
 #   bash preflight.sh --check            steps 1-3 only: validate everything, install nothing heavy
-#   bash preflight.sh --config FILE      use FILE instead of ./perseus.toml
+#   bash preflight.sh --config DIR       use the config files in DIR instead of ./Config
+#                                        (a single FILE.toml still works, unsplit)
 #   bash preflight.sh --install-driver   VM only: install the NVIDIA driver, then reboot and re-run
-#   bash preflight.sh --model.id org/name   override any perseus.toml key for this run
+#   bash preflight.sh --model.id org/name   override any config key for this run
+#
+# Config lives in Config/: provider.toml (model, HF token), settings.toml and
+# tooling.toml (tool settings and their keys). After a git pull, this script merges
+# template changes into them (bash Config/configuration.sh) without touching your values.
 #
 # Writes nothing large into the checkout: weights, logs, SearXNG and run state
 # go to the data directory (see setup/check_config.py); its path is recorded in
-# .perseus-data beside the config file.
+# .perseus-data inside the config folder.
 # =============================================================================
 set -Eeuo pipefail
 
-CONFIG="$PWD/perseus.toml"          # both entry points read ./perseus.toml from where they run
+CONFIG="$PWD/Config"                # both entry points read ./Config/ from where they run
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 CHECK_ONLY=0
@@ -36,18 +42,26 @@ while (($#)); do
     --check) CHECK_ONLY=1 ;;
     --install-driver) INSTALL_DRIVER=1 ;;
     --skip-download) SKIP_DOWNLOAD=1 ;;
-    --config) CONFIG="${2:?--config needs a file}"; shift ;;
+    --config) CONFIG="${2:?--config needs a folder or file}"; shift ;;
     --config=*) CONFIG="${1#--config=}" ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     --*.*=*) PASS+=("$1") ;;
     --*.*) PASS+=("$1" "${2:?$1 needs a value}"); shift ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
 done
-CONFIG_DIR="$(cd "$(dirname "$CONFIG")" 2>/dev/null && pwd)" \
-  || { echo "  ✗ the folder for $CONFIG doesn't exist" >&2; exit 2; }
-CONFIG="$CONFIG_DIR/$(basename "$CONFIG")"
+if [[ "$CONFIG" == *.toml ]]; then          # a single all-in-one file (the pre-split layout)
+  CONFIG_DIR="$(cd "$(dirname "$CONFIG")" 2>/dev/null && pwd)" \
+    || { echo "  ✗ the folder for $CONFIG doesn't exist" >&2; exit 2; }
+  CONFIG="$CONFIG_DIR/$(basename "$CONFIG")"
+  POINTER_DIR="$CONFIG_DIR"
+else                                        # a Config folder: provider, settings, tooling
+  mkdir -p "$CONFIG"
+  CONFIG="$(cd "$CONFIG" && pwd)"
+  POINTER_DIR="$CONFIG"
+fi
+DEFAULT_CONFIG="$PWD/Config"
 cd "$ROOT"
 # shellcheck source=setup/pins.env
 source setup/pins.env
@@ -102,10 +116,10 @@ t_end() {  # t_end <stage>
     "$RUN_ID" "$1" "$secs" "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" >> "$TIMINGS"
 }
 
-# The HF token lives only in perseus.toml and is read by the Python stages.
+# The HF token lives only in Config/provider.toml and is read by the Python stages.
 # Keep any exported copy out of every child process.
 if [[ -n "${HF_TOKEN:-}${HUGGING_FACE_HUB_TOKEN:-}" ]]; then
-  warn "HF_TOKEN is set in your shell; Perseus ignores it and reads [secrets] from $(basename "$CONFIG")"
+  warn "HF_TOKEN is set in your shell; Perseus ignores it and reads [secrets] hf_token from provider.toml"
 fi
 unset HF_TOKEN HUGGING_FACE_HUB_TOKEN
 export HF_HOME="$TMPD/hf"                 # metadata checks only; the download uses <data>/run/hf
@@ -127,8 +141,8 @@ as_root() {
 
 bold "Perseus preflight · run $RUN_ID · config $CONFIG"
 
-# ================================================================= 1. config + driver
-step "1/6 Config file and NVIDIA driver"
+# ================================================================= 1. driver
+step "1/6 NVIDIA driver"
 t_start
 [[ "$(uname -s)" == "Linux" ]] || die "Perseus runs on Linux only (found $(uname -s))"
 case "$(uname -m)" in x86_64|aarch64) ;; *) die "unsupported CPU architecture $(uname -m)";; esac
@@ -138,13 +152,6 @@ if [[ -r /etc/os-release ]]; then
   [[ " ${ID:-} ${ID_LIKE:-} " == *" debian "* || "${ID:-}" == "ubuntu" ]] \
     || warn "tested on Ubuntu/Debian; found ${PRETTY_NAME:-unknown}. Continuing."
 fi
-
-if [[ ! -f "$CONFIG" ]]; then
-  install -m 600 perseus.example.toml "$CONFIG"
-  die "created $CONFIG from the example" \
-      "fill in [model] id and [secrets] hf_token, then run bash preflight.sh again"
-fi
-chmod 600 "$CONFIG"
 
 if ! command -v nvidia-smi >/dev/null || ! nvidia-smi -L >/dev/null 2>&1; then
   if ((INSTALL_DRIVER)); then
@@ -197,9 +204,17 @@ t_end env_base
 # ================================================================= 3. checks
 step "3/6 Config, hardware, model and sizing checks"
 t_start
+if [[ -d "$CONFIG" ]]; then
+  # create Config/*.toml from the templates, or merge template changes in; your values are kept
+  PERSEUS_PYTHON="$ROOT/$PY" bash Config/configuration.sh --dir "$CONFIG" --quiet || exit $?
+else
+  [[ -f "$CONFIG" ]] || die "$CONFIG not found"
+  chmod 600 "$CONFIG"
+  warn "$(basename "$CONFIG") is a single-file config: bash Config/configuration.sh --from $CONFIG splits it"
+fi
 "$PY" -m setup.check_config "${CFG[@]}" check "${PASS[@]}" || exit $?
 t_end checks
-DATA="$(cat "$CONFIG_DIR/.perseus-data")"
+DATA="$(cat "$POINTER_DIR/.perseus-data")"
 mkdir -p "$DATA/logs" "$DATA/run"
 echo "$RUN_ID" > "$DATA/run/run_id"                   # Python stages record under the same run
 cat "$TIMINGS" >> "$DATA/logs/boot-times.jsonl"; TIMINGS="$DATA/logs/boot-times.jsonl"
@@ -234,5 +249,5 @@ else
 fi
 
 START="python3 perseus.py"
-[[ "$CONFIG" == "$PWD/perseus.toml" ]] || START+=" --config $CONFIG"
+[[ "$CONFIG" == "$DEFAULT_CONFIG" ]] || START+=" --config $CONFIG"
 bold $'\n'"Preflight done. Data in $DATA. Start Perseus with:  $START"

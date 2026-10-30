@@ -1,9 +1,19 @@
-"""perseus.toml (the config), perseus.resolved.toml (what preflight decided) and the data directory.
+"""The config (Config/*.toml), perseus.resolved.toml (what preflight decided) and the data directory.
 
-Two trees are kept apart: the checkout you cloned (code and perseus.toml) and
+The config is three files in Config/, made from Config/templates by
+`bash Config/configuration.sh` (which also merges template changes into them later):
+
+  provider.toml   [model] id and [secrets] hf_token
+  settings.toml   everything else about serving and behaviour
+  tooling.toml    each tool's section, holding that tool's own api_key
+
+They are read together as one config: a [section] can span files, but each key is
+set in one file only. `--config FILE` still accepts a single all-in-one .toml.
+
+Two trees are kept apart: the checkout you cloned (code and Config/) and
 a data directory preflight creates on the fastest local disk (weights, logs,
 SearXNG, run state). Preflight records the data directory in a one-line
-pointer file beside perseus.toml, so perseus.py never guesses.
+pointer file inside Config/, so perseus.py never guesses.
 
 Config validation:
 
@@ -134,7 +144,22 @@ def _languages(v: list) -> str | None:
 # keys that changed: say what replaced them instead of just "unknown key"
 RENAMED = {("code_runner", "internet"): 'replaced by network = "none", "packages" or "full" (internet = true '
                                         'is "full"; the default "packages" allows package installs only)',
-           ("code_runner", "key_file"): "replaced by [secrets] code_runner_api_key"}
+           ("code_runner", "key_file"): "replaced by [code_runner] api_key in tooling.toml",
+           ("secrets", "code_runner_api_key"): "moved to [code_runner] api_key in tooling.toml "
+                                               "(bash Config/configuration.sh moves it for you)"}
+
+# The split config: which file each key belongs in (Config/templates/ has the same layout).
+CONFIG_DIR = "Config"
+CONFIG_FILES = ("provider.toml", "settings.toml", "tooling.toml")
+UPDATE_HINT = "bash Config/configuration.sh"
+
+
+def home_file(section: str, key: str) -> str:
+    if section == "secrets" or (section, key) == ("model", "id"):
+        return "provider.toml"
+    if section == "code_runner":
+        return "tooling.toml"
+    return "settings.toml"
 
 SCHEMA: dict[str, dict[str, Key]] = {
     "model": {
@@ -151,7 +176,6 @@ SCHEMA: dict[str, dict[str, Key]] = {
     },
     "secrets": {
         "hf_token": Key((str,), "", check=_hf_token, secret=True),
-        "code_runner_api_key": Key((str,), "", check=_api_key, secret=True),
     },
     "storage": {
         "data_dir": Key((str,), "auto", check=_data_dir),
@@ -177,6 +201,7 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "warn_download_minutes": Key((int, float), 20, check=_positive),
     },
     "code_runner": {
+        "api_key": Key((str,), "", check=_api_key, secret=True),   # read by the sandbox broker only
         "enabled": Key((bool,), True),
         "backend": Key((str,), "e2b", choices=("e2b",)),
         "e2b_template": Key((str,), ""),
@@ -192,15 +217,17 @@ SCHEMA: dict[str, dict[str, Key]] = {
 @dataclass
 class Config:
     data: dict[str, dict[str, Any]]
-    path: Path | None = None
+    path: Path | None = None             # the Config folder, or a single .toml
     warnings: list[str] = field(default_factory=list)
+    files: tuple[Path, ...] = ()         # every file read
 
     def __getitem__(self, section: str) -> dict[str, Any]:
         return self.data[section]
 
     def public(self) -> dict[str, dict[str, Any]]:
-        """Every section except [secrets], for files that leave preflight."""
-        return {s: dict(v) for s, v in self.data.items() if s != "secrets"}
+        """Every section except [secrets], minus every secret key, for files that leave preflight."""
+        return {s: {k: v for k, v in keys.items() if not SCHEMA[s][k].secret}
+                for s, keys in self.data.items() if s != "secrets"}
 
 
 def find_line(text: str, section: str, key: str | None = None) -> int | None:
@@ -250,28 +277,88 @@ def split_overrides(argv: list[str]) -> tuple[list[str], dict[str, Any]]:
     return rest, overrides
 
 
+def is_split(path: Path) -> bool:
+    """A Config folder (provider/settings/tooling) rather than one all-in-one .toml."""
+    return path.is_dir() or path.suffix != ".toml"
+
+
 def load(path: Path, overrides: dict[str, Any] | None = None) -> Config:
-    """Parse, validate and fill defaults. Raises ConfigError listing every problem."""
-    try:
-        text = path.read_text()
-    except FileNotFoundError:
-        raise ConfigError([f"{path.name} not found: copy perseus.example.toml to perseus.toml and fill it in"])
-    try:
-        raw = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as e:
-        raise ConfigError([f"{path.name}: {e}"])
-    return validate(raw, text=text, name=path.name, overrides=overrides, path=path)
+    """Parse, validate and fill defaults. Raises ConfigError listing every problem.
+
+    `path` is the Config folder (the three files are read together) or a single .toml."""
+    if not is_split(path):
+        try:
+            text = path.read_text()
+        except FileNotFoundError:
+            raise ConfigError([f"{path} not found: run {UPDATE_HINT} to create Config/, then use that"])
+        try:
+            raw = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as e:
+            raise ConfigError([f"{path.name}: {e}"])
+        return validate(raw, texts={path.name: text}, overrides=overrides, path=path, files=(path,))
+
+    shown = path.name or str(path)
+    missing = [n for n in CONFIG_FILES if not (path / n).is_file()]
+    if missing:
+        legacy = path.parent / "perseus.toml"
+        hint = (f"found the old {legacy.name}: run {UPDATE_HINT} to move it into {shown}/" if legacy.is_file()
+                else f"run {UPDATE_HINT} to create {'it' if len(missing) == 1 else 'them'}, then fill in "
+                     f"{shown}/provider.toml")
+        raise ConfigError([f"{shown}/{', '.join(missing)} not found: {hint}"])
+    raw: dict[str, Any] = {}
+    texts: dict[str, str] = {}
+    problems: list[str] = []
+    origin: dict[tuple[str, str], str] = {}
+    for n in CONFIG_FILES:
+        text = (path / n).read_text()
+        label = f"{shown}/{n}"
+        texts[label] = text
+        try:
+            doc = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as e:
+            problems.append(f"{label}: {e}")
+            continue
+        for section, value in doc.items():
+            if not isinstance(value, dict):
+                raw[section] = value          # validate() reports it
+                continue
+            into = raw.setdefault(section, {})
+            if not isinstance(into, dict):
+                continue
+            for key, v in value.items():
+                if (section, key) in origin:
+                    problems.append(f"{label} [{section}] {key}: also set in {origin[(section, key)]}; "
+                                    "keep it in one file")
+                    continue
+                into[key] = v
+                origin[(section, key)] = label
+    if problems:
+        raise ConfigError(problems)
+    cfg = validate(raw, texts=texts, overrides=overrides, path=path, files=tuple(path / n for n in CONFIG_FILES))
+    for (section, key), label in origin.items():
+        want = home_file(section, key)
+        if not label.endswith("/" + want) and section in SCHEMA and key in SCHEMA[section]:
+            cfg.warnings.append(f"{label} [{section}] {key} belongs in {shown}/{want} "
+                                f"({UPDATE_HINT} moves it)")
+    return cfg
 
 
-def validate(raw: dict, *, text: str = "", name: str = "perseus.toml",
-             overrides: dict[str, Any] | None = None, path: Path | None = None) -> Config:
+def validate(raw: dict, *, text: str = "", name: str = "perseus.toml", texts: dict[str, str] | None = None,
+             overrides: dict[str, Any] | None = None, path: Path | None = None,
+             files: tuple[Path, ...] = ()) -> Config:
     problems: list[str] = []
     warnings: list[str] = []
+    texts = texts if texts is not None else ({name: text} if text else {})
 
     def where(section: str, key: str | None = None) -> str:
-        line = find_line(text, section, key) if text else None
-        loc = f"{name}:{line}" if line else name
-        return f"{loc} [{section}]" + (f" {key}" if key else "")
+        """file:line [section] key, from whichever file sets it (or the file that should)."""
+        for label, body in texts.items():
+            line = find_line(body, section, key)
+            if line:
+                return f"{label}:{line} [{section}]" + (f" {key}" if key else "")
+        label = next((lb for lb in texts if lb.endswith(home_file(section, key or ""))), None) \
+            or next(iter(texts), name)
+        return f"{label} [{section}]" + (f" {key}" if key else "")
 
     for section, value in raw.items():
         if section not in SCHEMA:
@@ -325,14 +412,14 @@ def validate(raw: dict, *, text: str = "", name: str = "perseus.toml",
         if data["secrets"]["hf_token"] in ("", "hf_..."):
             data["secrets"]["hf_token"] = ""
             warnings.append("no HF token set: fine for public repos; gated or private repos will fail the check")
-        key = data["secrets"]["code_runner_api_key"].strip()
-        data["secrets"]["code_runner_api_key"] = "" if key in ("", "e2b_...") else key
-        if data["code_runner"]["enabled"] and not data["secrets"]["code_runner_api_key"]:
-            warnings.append("no [secrets] code_runner_api_key set: the code runner (run_code) stays off")
+        key = data["code_runner"]["api_key"].strip()
+        data["code_runner"]["api_key"] = "" if key in ("", "e2b_...") else key
+        if data["code_runner"]["enabled"] and not data["code_runner"]["api_key"]:
+            warnings.append("no [code_runner] api_key set in tooling.toml: the code runner (run_code) stays off")
 
     if problems:
         raise ConfigError(problems)
-    return Config(data=data, path=path, warnings=warnings)
+    return Config(data=data, path=path, warnings=warnings, files=files)
 
 
 def _closest(key: str, known: dict) -> str | None:
@@ -425,12 +512,14 @@ class Paths:
 
 
 def default_config_path() -> Path:
-    """Both entry points read ./perseus.toml from the directory they run in."""
-    return Path.cwd() / "perseus.toml"
+    """Both entry points read ./Config/ from the directory they run in."""
+    return Path.cwd() / CONFIG_DIR
 
 
 def pointer_path(config_path: Path) -> Path:
-    return config_path.resolve().parent / DATA_POINTER
+    """Inside the Config folder, or beside a single-file config."""
+    config_path = config_path.resolve()
+    return (config_path if is_split(config_path) else config_path.parent) / DATA_POINTER
 
 
 def record_data_dir(config_path: Path, data_dir: Path) -> Path:
@@ -447,7 +536,8 @@ def find_paths(config_path: Path, override: Path | None = None) -> Paths:
     try:
         data = Path(p.read_text().strip())
     except OSError:
-        raise ConfigError([f"no data directory recorded for {config_path.name} yet: run bash preflight.sh"
+        raise ConfigError([f"no data directory recorded for {config_path.name}{'/' if is_split(config_path) else ''} yet: "
+                           "run bash preflight.sh"
                            + (f" --config {config_path}" if config_path.resolve() != default_config_path() else "")])
     if not data.is_dir():
         raise ConfigError([f"the data directory {data} is gone (new instance?): run bash preflight.sh again"])

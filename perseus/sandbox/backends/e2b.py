@@ -1,7 +1,7 @@
 """E2B: each session is a fresh Firecracker microVM in E2B's cloud.
 
 Settings:
-  api_key       [secrets] code_runner_api_key from perseus.toml, read by the broker (never by Perseus);
+  api_key       [code_runner] api_key from Config/tooling.toml, read by the broker (never by Perseus);
                 if empty, the broker's E2B_API_KEY environment variable
   e2b_template  [code_runner] e2b_template: template name with the toolchains installed (setup/sandbox/);
                 empty = E2B's default template (Python, Node.js, Bash only)
@@ -25,7 +25,7 @@ KILL_GRACE_S = 2
 def read_key(settings: dict, environ=os.environ) -> str:
     key = (settings.get("api_key") or environ.get("E2B_API_KEY") or "").strip()
     if not key:
-        raise SandboxError("config", "no code runner API key: set [secrets] code_runner_api_key in perseus.toml")
+        raise SandboxError("config", "no code runner API key: set [code_runner] api_key in Config/tooling.toml")
     return key
 
 
@@ -104,7 +104,7 @@ class E2BBackend:
         except ImportError:
             raise SandboxError("config", "the e2b package isn't installed (bash preflight.sh installs it)")
         self.key = read_key(settings, environ)
-        self.key_source = ("perseus.toml [secrets] code_runner_api_key" if (settings.get("api_key") or "").strip()
+        self.key_source = ("tooling.toml [code_runner] api_key" if (settings.get("api_key") or "").strip()
                            else "E2B_API_KEY environment variable")
         self.template = (settings.get("e2b_template") or "").strip() or None
         self.environ = environ
