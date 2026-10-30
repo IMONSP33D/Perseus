@@ -6,7 +6,7 @@ Security, in order on every request:
             SameSite=Strict cookie. Everything except /healthz and /assets needs it.
   csrf      writes need the X-Perseus header and a same-origin Origin, if one is sent
   headers   strict CSP (no inline script or style), nosniff, no referrer, no framing
-  limits    request bodies up to 1 MB
+  limits    request bodies up to 1 MB; a chat message (with attachments) up to 160 MB
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from perseus.web.dashboard import BadRequest, Busy, Dashboard
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 COOKIE = "perseus_session"
 MAX_BODY = 1024 * 1024
+MAX_MESSAGE_BODY = 160 * 1024 * 1024   # a message with up to 60 MB of attachments, after JSON escaping
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
        "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
@@ -156,9 +157,9 @@ class _Handler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _body(self) -> dict:
+    def _body(self, limit: int = MAX_BODY) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
-        if n > MAX_BODY:
+        if n > limit:
             if n <= 8 * MAX_BODY:   # read and discard, so the client gets the 400 instead of a broken pipe
                 left = n
                 while left > 0:
@@ -301,7 +302,7 @@ class _Handler(BaseHTTPRequestHandler):
                 d.delete(cid)
                 return self._json(200, {"deleted": cid})
             if method == "POST" and rest == ("messages",):
-                return self._stream(d.start_turn(cid, self._body().get("text", "")))
+                return self._stream(d.start_turn(cid, self._body(MAX_MESSAGE_BODY).get("text", "")))
             if method == "POST" and rest == ("stop",):
                 d.stop(cid)
                 return self._json(200, {"stopping": True})

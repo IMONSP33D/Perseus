@@ -345,6 +345,13 @@ class ServerTests(unittest.TestCase):
         self.assertEqual((st, body["error"]), (400, "request too large"))
         self.assertEqual(self.c.req("GET", "/api/nothing")[0], 404)
 
+    def test_messages_take_large_attachments(self):
+        # attachments ride in the message text: well past the 1 MB cap on other routes
+        _, chat = self.c.req("POST", "/api/chats", {})
+        st, events = self.c.stream(chat["id"], "say hello\n\nAttached file: big.txt\n" + "x" * (2 * 1024 * 1024))
+        self.assertEqual(st, 200)
+        self.assertEqual(events[-1]["type"], "done")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -288,6 +288,10 @@ textarea::placeholder { color: var(--placeholder); }
   display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 6px 0 12px; border-radius: 999px;
   border: 1px solid var(--border); background: var(--surface); font-size: 13px; font-weight: 500;
 }
+.att { max-width: 100%; }
+.att svg { flex: none; }
+.att-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-size { flex: none; color: var(--muted); }
 .att button { width: 26px; height: 26px; border: none; border-radius: 999px; background: transparent; color: var(--muted); display: flex; align-items: center; justify-content: center; }
 .banner { padding: 10px 14px; border-radius: 12px; background: var(--danger-soft); color: var(--danger-fg); font-size: 14px; font-weight: 500; }
 .composer {
@@ -480,7 +484,8 @@ textarea::placeholder { color: var(--placeholder); }
   position: relative; display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 0 12px;
   border: none; border-radius: 10px; background: transparent; color: var(--text); font-size: 15px; font-weight: 500; text-align: left;
 }
-.nav-item:hover { background: var(--track); }
+.nav-item:hover:not(:disabled) { background: var(--track); }
+.nav-item:disabled { cursor: not-allowed; opacity: .5; }
 .nav-item.active { background: var(--active-chat-bg); color: var(--active-chat-fg); font-weight: 600; }
 .nav-icon { width: 20px; height: 20px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--muted); }
 .nav-item.active .nav-icon { color: inherit; }
@@ -648,23 +653,23 @@ textarea::placeholder { color: var(--placeholder); }
 
 /* tools page */
 .tools-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
-.tools-lede { margin: 0; font-size: 15px; color: var(--muted); max-width: 62ch; }
+.tools-lede { margin: 0; font-size: 14px; font-weight: 500; color: var(--muted); }
 .tool-filter {
-  width: 260px; max-width: 100%; height: 44px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--border);
+  width: 240px; max-width: 100%; height: 40px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--border);
   background: var(--surface); color: var(--text); font-size: 15px;
 }
 .tool-filter::placeholder { color: var(--placeholder); }
-.tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .tool-tile {
-  width: 100%; height: 100%; display: flex; align-items: center; gap: 14px; min-height: 80px; padding: 16px; border-radius: 14px;
+  width: 100%; height: 64px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-radius: 14px;
   border: 1px solid var(--border); background: var(--surface); color: var(--text); text-align: left; cursor: help;
   transition: border-color .15s, box-shadow .15s;
 }
 .tool-tile:hover, .tool-tile:focus-visible { border-color: var(--track-off); box-shadow: 0 6px 18px var(--shadow); }
-.tool-ico { width: 42px; height: 42px; flex: none; border-radius: 11px; background: var(--icon-bg); color: var(--primary-text); display: flex; align-items: center; justify-content: center; }
-.tool-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.tool-name { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tool-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12.5px; color: var(--muted); }
+.tool-ico { width: 36px; height: 36px; flex: none; border-radius: 10px; background: var(--icon-bg); color: var(--primary-text); display: flex; align-items: center; justify-content: center; }
+.tool-ico svg { width: 18px; height: 18px; }
+.tool-name { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool-tile .chip { flex: none; }
 
 /* narrow content area: the flow runs top to bottom, review loops become the gate card's footer */
 @container dev (max-width: 820px) {
