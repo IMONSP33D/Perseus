@@ -105,7 +105,13 @@ def fingerprint(key: str) -> str:
 def tooling_file(config_path: str | Path) -> Path:
     """Config/tooling.toml for a Config folder; the file itself for a single-file config."""
     path = Path(config_path).expanduser()
-    return path / TOOLING_FILE if path.is_dir() or path.suffix != ".toml" else path
+    if path.is_dir() or path.suffix != ".toml":
+        return path / TOOLING_FILE
+    if path.name == "perseus.toml" and not path.exists() and (path.parent / "Config" / TOOLING_FILE).is_file():
+        # a resolved file from before the split still names the old perseus.toml, which
+        # configuration.sh has since moved into Config/: follow it there until preflight re-runs
+        return path.parent / "Config" / TOOLING_FILE
+    return path
 
 
 def config_secret(config_path: str) -> str:

@@ -705,6 +705,15 @@ class E2BBackendStub(unittest.TestCase):
         self.assertEqual(self.mod.read_key({"api_key": " from-toml "}, {"E2B_API_KEY": "env"}), "from-toml")
         self.assertEqual(self.mod.read_key({"api_key": ""}, {"E2B_API_KEY": "env"}), "env")
 
+    def test_a_stale_resolved_path_to_the_old_perseus_toml_still_finds_the_key(self):
+        # configuration.sh moved perseus.toml into Config/, but perseus.resolved.toml (written by an
+        # older preflight) still names the old file: the broker must follow it, not lose run_code
+        from perseus.sandbox.backends import config_secret
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "Config").mkdir()
+            (Path(d) / "Config" / "tooling.toml").write_text('[code_runner]\napi_key = "e2b_moved"\n')
+            self.assertEqual(config_secret(str(Path(d) / "perseus.toml")), "e2b_moved")
+
     def test_broker_reads_the_key_from_tooling_toml_only(self):
         from perseus.sandbox.backends import config_secret
         with tempfile.TemporaryDirectory() as d:

@@ -539,7 +539,7 @@ The one large thing left in the checkout is the Python environment (`.venv`, abo
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -t .      # 318 tests, about 45 s; no GPU, network or extra packages
+python3 -m unittest discover -s tests -t .      # 319 tests, about 45 s; no GPU, network or extra packages
 ```
 
 The sandbox conformance suite runs against a local, namespace-isolated runner when `unshare -rn` works (most Linux boxes; skipped elsewhere). To run it against E2B too (it uses the key and template from `./Config/tooling.toml`, and costs a few cents):
