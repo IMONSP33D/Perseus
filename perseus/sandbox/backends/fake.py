@@ -1,4 +1,4 @@
-"""fake: a scripted backend for unit tests. Runs nothing; never selectable in perseus.toml.
+"""fake: a scripted backend for unit tests. Runs nothing; never selectable in tooling.toml.
 
     backend = FakeBackend({})
     backend.on("./main", ExecResult(0, "hi\n"))      # exact command -> result

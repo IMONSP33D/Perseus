@@ -2,11 +2,12 @@
 
   check             config schema, driver, hardware, Hub metadata, sizing, disk
                     -> picks the data directory, writes <data>/perseus.resolved.toml and
-                    records the data directory beside perseus.toml (seconds; nothing installed)
+                    records the data directory in Config/ (seconds; nothing installed)
   smoke             after vLLM installs: torch sees every GPU and can allocate on each
   searxng-settings  write <data>/searxng/settings.yml for this box
 
-The download is setup/download.py. Only setup/ and preflight.sh ever read [secrets].
+The download is setup/download.py. Only setup/ and preflight.sh ever read [secrets] (provider.toml);
+tool keys in tooling.toml are read only by each tool's own process (the sandbox broker for run_code).
 """
 
 from __future__ import annotations
@@ -76,12 +77,14 @@ def cmd_check(args, overrides) -> None:
             print(f"  ✗ {p}", file=sys.stderr)
         sys.exit(EXIT["config"])
     m = cfg["model"]
-    ok(f"{args.config.name} valid: {m['id']}@{m['revision']}")
+    shown = args.config.name + ("/" if args.config.is_dir() else "")
+    ok(f"{shown} valid: {m['id']}@{m['revision']}")
     for w in cfg.warnings:
         warn(w)
-    if args.config.exists() and args.config.stat().st_mode & 0o077:
-        os.chmod(args.config, 0o600)
-        warn(f"{args.config.name} was readable by other users; set to 600")
+    for f in cfg.files:
+        if f.exists() and f.stat().st_mode & 0o077:
+            os.chmod(f, 0o600)
+            warn(f"{f.name} was readable by other users; set to 600")
 
     section("Hardware")
     try:
@@ -233,10 +236,10 @@ def _write_resolved(cfg: Config, hw, meta: ModelMeta, res, tool_parser, reasonin
         "notes": {"warnings": res.warnings},
     }
     sections["model"].update({"requested_" + k: v for k, v in cfg["model"].items() if k != "id"})
-    # whether a key is set, never the key: the sandbox broker reads it from perseus.toml itself
-    sections["code_runner"]["api_key_set"] = bool(cfg["secrets"]["code_runner_api_key"])
+    # whether a key is set, never the key: the sandbox broker reads it from tooling.toml itself
+    sections["code_runner"]["api_key_set"] = bool(cfg["code_runner"]["api_key"])
     header = (f"Written by preflight at {datetime.now(timezone.utc).isoformat(timespec='seconds')}.\n"
-              "Generated file: edit perseus.toml and re-run `bash preflight.sh`, not this file.\n"
+              "Generated file: edit Config/*.toml and re-run `bash preflight.sh`, not this file.\n"
               "Holds no secrets; perseus.py reads only this file.")
     paths.resolved.write_text(dumps(sections, header))
 
@@ -299,7 +302,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  ✗ {e}", file=sys.stderr)
         sys.exit(EXIT["config"])
     p = argparse.ArgumentParser(prog="python3 -m setup.check_config")
-    p.add_argument("--config", type=Path, default=default_config_path(), help="perseus.toml to use")
+    p.add_argument("--config", type=Path, default=default_config_path(), help="the Config folder (or a single .toml) to use")
     sub = p.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("check")
     c.add_argument("--meta-file", help="offline dry run: model metadata JSON instead of the Hub")

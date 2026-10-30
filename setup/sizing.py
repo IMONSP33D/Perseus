@@ -177,9 +177,9 @@ def resolve(hw: Hardware, meta: ModelMeta, model_cfg: dict) -> Resolution:
         threshold = min(SMALL_GPU_CONTEXT, meta.max_positions)
         detected = n == 1 and ctx16 < threshold
         if small_pref is True:
-            on, why = True, "forced on in perseus.toml"
+            on, why = True, "forced on in Config/settings.toml"
         elif small_pref is False:
-            on, why = False, "forced off in perseus.toml"
+            on, why = False, "forced off in Config/settings.toml"
         else:
             on = detected
             why = (f"{_k(min(ctx16, meta.max_positions))} tokens of context on 1 × {hw.gpus[0].vram_gib:.0f} GiB"

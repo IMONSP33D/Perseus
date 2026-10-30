@@ -8,9 +8,9 @@ perseus.sandbox.client. Swapping providers changes this process, never Perseus.
 
     python -m perseus.sandbox.broker --port N
     env PERSEUS_SANDBOX_TOKEN     per-boot bearer token (required)
-        PERSEUS_SANDBOX_SETTINGS  JSON of the [code_runner] config section, plus the path of perseus.toml;
-                                  the broker reads [secrets] code_runner_api_key from that file itself
-        E2B_API_KEY               fallback when perseus.toml has no key
+        PERSEUS_SANDBOX_SETTINGS  JSON of the [code_runner] config section, plus the Config folder's path;
+                                  the broker reads [code_runner] api_key from Config/tooling.toml itself
+        E2B_API_KEY               fallback when tooling.toml has no key
 
 Endpoints (all JSON):
     GET  /healthz   200 once the start-up probe has finished (success or not), 503 before

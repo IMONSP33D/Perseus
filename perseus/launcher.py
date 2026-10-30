@@ -8,7 +8,7 @@ Boot order, cheapest failure first:
   4. first token (timed), then one test tool call that must come back parsed
   5. the dashboard (or the terminal console with --console)
 
-Reads ./perseus.toml only to find the data directory preflight recorded, then
+Reads ./Config/ only to find the data directory preflight recorded, then
 <data>/perseus.resolved.toml (no secrets). Everything it writes goes to the
 data directory: logs/ and run/ (PIDs, the per-boot vLLM key and the dashboard
 link, mode 600, removed at shutdown).
@@ -187,7 +187,7 @@ class RunFiles:
 
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="python3 perseus.py")
-    p.add_argument("--config", type=Path, default=None, help="perseus.toml to use (default: ./perseus.toml)")
+    p.add_argument("--config", type=Path, default=None, help="the Config folder to use (default: ./Config)")
     p.add_argument("--data", type=Path, default=None, help="data directory (default: the one preflight recorded)")
     p.add_argument("--ask", metavar="QUESTION", help="answer one question through the engine and gateway, then exit")
     p.add_argument("--selftest", action="store_true", help="run the gateway refusal checks and exit")
@@ -441,7 +441,7 @@ def serve_dashboard(r: dict, paths: Paths, run: RunFiles, sup, llm, registry, ct
         server = Server(dash, srv["bind"], int(srv["port"]), health=health, on_visit=VisitReporter(say))
     except OSError as e:
         die(f"can't open the dashboard on {srv['bind']}:{srv['port']} ({e.strerror or e})",
-            "another program uses that port: set [server] port in perseus.toml")
+            "another program uses that port: set [server] port in Config/settings.toml")
     server.start()
     port = server.port
     url = server.url(_public_ip()) if srv.get("public") else server.url()

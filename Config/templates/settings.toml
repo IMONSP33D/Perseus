@@ -1,0 +1,40 @@
+# Perseus settings: how the model is served and how Perseus behaves. No secrets here.
+# Your copy is Config/settings.toml (git-ignored). Edit that one, not this template.
+# Any key set to "auto" is decided by preflight from the hardware and the model;
+# a value you type here wins. CLI flags override one key for one run: --model.max_context 32768
+# After pulling a new version, bash Config/configuration.sh adds new keys and keeps your values
+# (bash preflight.sh runs it for you).
+
+[model]                      # tuning for the model named in provider.toml
+revision = "main"            # pin a commit for repeatable boots
+quantization = "auto"        # auto | fp8 | bf16 | awq | gptq
+max_context = "auto"         # auto | a number of tokens
+tensor_parallel = "auto"     # auto | 1 | 2 | 4 | 8
+trust_remote_code = false    # true requires revision pinned to a commit
+cpu_offload_gb = 0           # single GPU only: spill this many GB of weights to RAM (slower)
+small_gpu = "auto"           # auto | true | false: small-GPU profile, decided by preflight
+tool_parser = "auto"         # auto | a vLLM tool-call parser name (override if auto picks wrong)
+reasoning_parser = "auto"    # auto | none | a vLLM reasoning parser name
+
+[storage]
+data_dir = "auto"            # auto = fastest local disk with room (weights, logs, SearXNG, run state);
+                             # or an absolute path. Never inside the checkout.
+
+[server]
+bind = "127.0.0.1"
+port = 8080
+public = false               # true = bind 0.0.0.0 and require the access token
+
+[search]
+port = 8888                  # local only; never reachable by fetch_url
+engines = ["duckduckgo", "wikipedia", "github", "arxiv", "stackoverflow", "mojeek"]
+
+[backend]
+max_restarts = 3             # crash restarts per process (vLLM, SearXNG), with backoff
+fast_start = false           # true = skip CUDA graph capture: faster load, slower generation
+
+[limits]
+research_depth = "standard"  # quick | standard | deep (shown in the dashboard)
+fetch_timeout_s = 15
+max_response_kb = 2048
+warn_download_minutes = 20

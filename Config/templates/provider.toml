@@ -1,0 +1,10 @@
+# Perseus provider: which model to serve and the token to download it.
+# Your copy is Config/provider.toml (git-ignored, mode 600). Edit that one, not this template.
+# Updates never overwrite your model or token: bash Config/configuration.sh merges new keys in around them.
+# Read by preflight only; perseus.py never loads this file.
+
+[model]
+id = "org/model-name"        # any Hugging Face repo with safetensors weights
+
+[secrets]
+hf_token = "hf_..."          # needed for gated or private repos; leave as is for public ones

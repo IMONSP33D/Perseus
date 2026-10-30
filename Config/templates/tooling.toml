@@ -1,0 +1,19 @@
+# Perseus tooling: settings for tools, each next to its own API key.
+# Your copy is Config/tooling.toml (git-ignored, mode 600). Edit that one, not this template.
+# A tool's key lives in its own section as api_key; only that tool's process reads it,
+# never perseus.py or the model. Updates keep your keys: bash Config/configuration.sh.
+
+[code_runner]                # the run_code tool: builds and runs code in a remote, disposable sandbox
+api_key = "e2b_..."          # E2B API key (e2b.dev); read only by the sandbox broker.
+                             # Leave as is to keep the code runner off.
+enabled = true               # on by default; stays off (and hidden from the model) until api_key is set
+backend = "e2b"              # e2b (more backends can plug in; see perseus/sandbox/backends/)
+e2b_template = ""            # E2B template with the toolchains (setup/sandbox/); "" = E2B default
+                             # (Python, Node.js and Bash only; C, C++, Rust, Go and Java need the template)
+network = "packages"         # what sandboxed programs can reach: "none", "packages" (pip, npm,
+                             # cargo, go and maven registries only) or "full" (the internet).
+                             # Separate from web search: the Internet Access switch doesn't change it.
+languages = []               # [] = every language the sandbox has; or a subset, e.g. ["python", "rust"]
+build_timeout_s = 120        # compile step limit (5-180)
+run_timeout_s = 30           # program run limit (1-120)
+max_output_kb = 64           # stdout + stderr kept per run (head and tail)

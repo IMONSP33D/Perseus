@@ -1,4 +1,12 @@
 # Secrets and per-box state: never committed
+# (Config/: your provider, settings and tooling files, their backups and the last-update snapshot;
+#  only Config/templates/, configuration.sh and update.py are committed)
+Config/*.toml
+Config/.base/
+Config/.backup/
+Config/.perseus-data
+Config/*.tmp
+# the single-file config from before the split (configuration.sh moves it into Config/)
 perseus.toml
 perseus.resolved.toml
 .perseus-data

@@ -52,8 +52,9 @@ Perseus takes a blank GPU box and a Hugging Face model id and gives you back a w
 
 ```bash
 git clone https://github.com/IMONSP33D/Perseus.git perseus && cd perseus
-cp perseus.example.toml perseus.toml
-nano perseus.toml          # set [model] id and [secrets] hf_token (and code_runner_api_key for run_code)
+bash Config/configuration.sh      # creates Config/provider.toml, settings.toml and tooling.toml
+nano Config/provider.toml         # set [model] id and [secrets] hf_token
+nano Config/tooling.toml          # optional: [code_runner] api_key turns on run_code
 ```
 
 **2. Prepare the box.** Preflight checks everything cheap first, so a bad config fails in seconds, not after a 400 GB download. It is safe to re-run: finished steps are skipped, and an interrupted download resumes.
@@ -82,7 +83,35 @@ Press **Ctrl-C** in the terminal to shut everything down, vLLM and SearXNG inclu
 
 ## Configuration
 
-All settings live in **`perseus.toml`**, a copy of [`perseus.example.toml`](perseus.example.toml) that documents every key. It is git-ignored, and preflight keeps it readable only by you (mode 600). If it's missing, preflight creates it from the example and stops so you can fill it in.
+Settings live in three files in **`Config/`**, made from the documented templates in [`Config/templates/`](Config/templates/). They are git-ignored and kept readable only by you (mode 600).
+
+| File | Holds | Read by |
+| --- | --- | --- |
+| `Config/provider.toml` | `[model] id` and `[secrets] hf_token`: which model, and the token to fetch it | preflight only |
+| `Config/settings.toml` | everything about serving and behaviour (`[model]` tuning, `[server]`, `[search]`, `[limits]`, …). No secrets | preflight |
+| `Config/tooling.toml` | one section per tool, holding that tool's settings **and its own `api_key`** | preflight (settings), and each tool's own process (its key) |
+
+A `[section]` can span files (`[model] id` is in provider.toml, the rest of `[model]` in settings.toml), but each key is set in one file only.
+
+**Updating after a `git pull`.** When the templates change, your files are updated without losing anything you set. `bash preflight.sh` does this for you; to run it by hand or preview it:
+
+```bash
+bash Config/configuration.sh --check     # what would change; writes nothing
+bash Config/configuration.sh             # apply it
+```
+
+It's a three-way merge, like git's. A snapshot of the templates from the last update (`Config/.base/`) shows which values you changed:
+
+- **Values you set** (model, keys, ports, anything) are always kept.
+- **New keys** arrive with their default.
+- **Defaults you never touched** follow the new template, so a changed default reaches you.
+- **Keys that moved** to another file, or were renamed, take your value with them.
+- **Keys that were removed** are listed and saved in the backup, never silently dropped.
+- Comments and layout come from the new templates, and your previous files are copied to `Config/.backup/<time>/` first.
+
+An old single-file `perseus.toml` from before the split is moved into `Config/` the same way, the first time either command runs.
+
+**Changing the config (for contributors).** Edit `Config/templates/` and the schema in `perseus/config.py` together; keep each value on one line. To rename or move a key, add one line to `MOVES` in [`Config/update.py`](Config/update.py) so existing configs follow. `tests/test_config_update.py` checks that every schema key has a template line in the right file.
 
 **How values are decided**
 
@@ -90,37 +119,49 @@ All settings live in **`perseus.toml`**, a copy of [`perseus.example.toml`](pers
 - The results are saved to `perseus.resolved.toml` in the data directory, so you can see what was picked.
 - One key can be overridden for a single run from the command line: `bash preflight.sh --model.id Qwen/Qwen3-32B-AWQ`.
 - Change the model or sizing keys, then re-run `bash preflight.sh` before `perseus.py`.
+- Each tool keeps its key in its own `tooling.toml` section (`api_key`), so a new tool that needs a key adds a section there.
 
 **The keys you will usually touch**
 
 | Section | Key | What it does |
 | --- | --- | --- |
-| `[model]` | `id` | Any Hugging Face repo with safetensors weights, e.g. `"Qwen/Qwen3-32B-AWQ"` |
+| `[model]` | `id` | Any Hugging Face repo with safetensors weights, e.g. `"Qwen/Qwen3-32B-AWQ"` (provider.toml) |
 | | `revision` | `"main"`, or a commit hash for repeatable boots (required with `trust_remote_code`) |
 | | `quantization` | `auto`, `fp8`, `bf16`, `awq` or `gptq` |
 | | `max_context` | `auto` or a token count |
 | | `tensor_parallel` | `auto`, `1`, `2`, `4` or `8` GPUs |
 | | `tool_parser`, `reasoning_parser` | `auto`, or a vLLM parser name if auto picks wrong (`reasoning_parser = "none"` turns it off) |
-| `[secrets]` | `hf_token` | Read by preflight only. `perseus.py` never loads it |
-| | `code_runner_api_key` | Your E2B API key: turns on `run_code`. Read only by the sandbox broker; `perseus.py` never loads it |
+| `[secrets]` | `hf_token` | provider.toml. Read by preflight only. `perseus.py` never loads it |
 | `[storage]` | `data_dir` | `auto` (fastest disk with room) or an absolute path outside the checkout |
 | `[server]` | `port`, `public` | Dashboard port. `public = true` binds `0.0.0.0`: anyone with the link can use the model |
 | `[search]` | `engines` | The SearXNG engines asked for each search |
 | `[limits]` | `research_depth` | `quick` (5), `standard` (20) or `deep` (50) web lookups per answer |
-| `[code_runner]` | `e2b_template` | The sandbox image with the compilers; see [Code runner](#code-runner) |
+| `[code_runner]` | `api_key` | tooling.toml. Your E2B API key: turns on `run_code`. Read only by the sandbox broker; `perseus.py` never loads it |
+| | `e2b_template` | The sandbox image with the compilers; see [Code runner](#code-runner) |
 
 **Example: a 32B model on a single 24 GB card**
 
 ```toml
+# Config/provider.toml
 [model]
 id = "Qwen/Qwen3-32B-AWQ"
-revision = "main"
-quantization = "auto"      # uses the repo's own AWQ weights
-max_context = "auto"       # as many tokens as the KV cache allows
 
 [secrets]
 hf_token = "hf_..."
-code_runner_api_key = "e2b_..."   # optional: turns on the code runner
+```
+
+```toml
+# Config/settings.toml (the defaults already do this)
+[model]
+revision = "main"
+quantization = "auto"      # uses the repo's own AWQ weights
+max_context = "auto"       # as many tokens as the KV cache allows
+```
+
+```toml
+# Config/tooling.toml
+[code_runner]
+api_key = "e2b_..."        # optional: turns on the code runner
 ```
 
 <details>
@@ -138,7 +179,7 @@ code_runner_api_key = "e2b_..."   # optional: turns on the code runner
 | `[limits]` | `fetch_timeout_s` | `15` | Per page read |
 | | `max_response_kb` | `2048` | Response size cap |
 | | `warn_download_minutes` | `20` | Warn when the download is expected to take longer |
-| `[code_runner]` | `enabled` | `true` | Inert until `[secrets] code_runner_api_key` is set: `run_code` is hidden from the model without it |
+| `[code_runner]` | `enabled` | `true` | Inert until `[code_runner] api_key` is set: `run_code` is hidden from the model without it |
 | | `backend` | `e2b` | The sandbox provider (more can plug in: `perseus/sandbox/backends/`) |
 | | `e2b_template` | `""` | E2B template with the toolchains; `""` = E2B's default (Python, Node.js, Bash only) |
 | | `network` | `packages` | What programs can reach: `none`, `packages` (pip, npm, cargo, Go and Maven registries only) or `full` (the internet). Separate from the Internet Access switch, which governs web research only |
@@ -147,7 +188,7 @@ code_runner_api_key = "e2b_..."   # optional: turns on the code runner
 | | `run_timeout_s` | `30` | Program run limit, 1–120 |
 | | `max_output_kb` | `64` | Output kept per run, head and tail |
 
-Both entry points read `./perseus.toml` from the folder they run in. `--config FILE` points somewhere else.
+Both entry points read `./Config/` from the folder they run in. `--config DIR` points somewhere else (a single all-in-one `.toml` still works there too).
 
 </details>
 
@@ -269,17 +310,16 @@ run_code ──ctx.sandbox──▶ client ──loopback + per-boot token──
 
 **Turn it on (E2B).** The free Hobby plan is enough for one user.
 
-1. Create an API key at [e2b.dev](https://e2b.dev) and put it in `perseus.toml`, next to your Hugging Face token:
+1. Create an API key at [e2b.dev](https://e2b.dev) and put it in `Config/tooling.toml`, in the code runner's own section:
    ```toml
-   [secrets]
-   hf_token = "hf_..."
-   code_runner_api_key = "e2b_..."
+   [code_runner]
+   api_key = "e2b_..."
    ```
-2. Build the toolchain image once (on E2B's builders, no Docker needed). It uses the key from `perseus.toml`:
+2. Build the toolchain image once (on E2B's builders, no Docker needed). It uses the key from `Config/tooling.toml`:
    ```bash
    uv run python -m setup.sandbox.build_template
    ```
-3. Tell Perseus to use it, in `perseus.toml`:
+3. Tell Perseus to use it, in the same section of `Config/tooling.toml`:
    ```toml
    [code_runner]
    e2b_template = "perseus-code"
@@ -303,7 +343,7 @@ The model's description of `run_code` tells it which level is in effect, so it k
 - **Fresh VM per call**, destroyed afterwards; build and run limits are enforced inside the VM, and output is capped.
 - **The network level is checked, not assumed.** At startup the broker makes real HTTPS requests from inside a sandbox. If an arbitrary site is reachable at `none` or `packages`, `run_code` stays off (fails closed).
 - **`packages` is tight, not sealed.** The firewall allows the registries by host name and refuses everything else, but DNS lookups still work, which is a slow side channel, and anything published on those registries can be downloaded. Use `none` when that matters.
-- **The key never reaches Perseus.** It lives in `[secrets]` like the Hugging Face token. Preflight records only *whether* it's set; the sandbox broker reads the key from `perseus.toml` itself. (An exported `E2B_API_KEY` also works, and is moved out of Perseus's environment at boot so tools, vLLM and SearXNG never inherit it.)
+- **The key never reaches Perseus.** It lives in `Config/tooling.toml`, apart from the Hugging Face token. Preflight records only *whether* it's set; the sandbox broker reads the key from `tooling.toml` itself, and never opens `provider.toml`. (An exported `E2B_API_KEY` also works, and is moved out of Perseus's environment at boot so tools, vLLM and SearXNG never inherit it.)
 - **The socket guard stays closed.** Perseus reaches the broker only on loopback, like SearXNG; the gateway refuses loopback, so `fetch_url` can't reach it.
 - **Output is untrusted.** Program output is wrapped like web pages, and instruction-like text is flagged in the feed.
 
@@ -453,8 +493,11 @@ Perseus keeps two trees apart: **the checkout** you cloned (code and config) and
 ```
 perseus/                         the checkout (this repo)
 ├── LICENSE                      GNU AGPL-3.0
-├── perseus.example.toml         config template documenting every key
-├── perseus.toml                 your config (git-ignored)
+├── Config/
+│   ├── templates/               provider, settings and tooling templates documenting every key
+│   ├── configuration.sh         creates your config from them, or merges template changes in
+│   ├── update.py                the merge (keeps your values; renamed keys in MOVES)
+│   └── provider.toml …          your config: provider, settings, tooling (git-ignored)
 ├── preflight.sh                 step 1: prepare the box
 ├── perseus.py                   step 2: start Perseus
 ├── setup/                       everything preflight runs
@@ -467,7 +510,7 @@ perseus/                         the checkout (this repo)
 │   └── sandbox/                 the code runner's image (Dockerfile) and E2B template builder
 ├── perseus/                     the Python package
 │   ├── launcher.py              boot order
-│   ├── config.py                loads perseus.toml and the resolved settings
+│   ├── config.py                loads Config/ and the resolved settings
 │   ├── model/                   vLLM launch, parser choice, streaming client, thinking splitter
 │   ├── engine/                  tool loop, validation, budgets, prompts, tool loader, replay
 │   ├── tools/                   one file per tool (registry in __init__.py, template in _example.py)
@@ -496,10 +539,10 @@ The one large thing left in the checkout is the Python environment (`.venv`, abo
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -t .      # 297 tests, about 45 s; no GPU, network or extra packages
+python3 -m unittest discover -s tests -t .      # 319 tests, about 45 s; no GPU, network or extra packages
 ```
 
-The sandbox conformance suite runs against a local, namespace-isolated runner when `unshare -rn` works (most Linux boxes; skipped elsewhere). To run it against E2B too (it uses the key and template from `./perseus.toml`, and costs a few cents):
+The sandbox conformance suite runs against a local, namespace-isolated runner when `unshare -rn` works (most Linux boxes; skipped elsewhere). To run it against E2B too (it uses the key and template from `./Config/tooling.toml`, and costs a few cents):
 
 ```bash
 PERSEUS_TEST_E2B=1 uv run python -m unittest tests.test_sandbox_conformance
@@ -512,7 +555,7 @@ PERSEUS_FAKE_HW=tests/fixtures/hw_1x4090.json \
   python3 -m setup.check_config check --meta-file tests/fixtures/meta_qwen25_32b_awq.json
 ```
 
-Install the pre-commit hook once per clone. It blocks commits that contain tokens or your `perseus.toml`:
+Install the pre-commit hook once per clone. It blocks commits that contain tokens or your own config files:
 
 ```bash
 uvx pre-commit install
@@ -520,7 +563,7 @@ uvx pre-commit install
 
 ## Secrets
 
-`perseus.toml` is git-ignored, kept at mode 600, and read only by preflight. `perseus.py` never loads the Hugging Face token, and the token is scrubbed from caches after the download. The code runner's key sits in `[secrets]` too; only the sandbox broker reads it, and it never reaches `perseus.resolved.toml`. The pre-commit hook above blocks commits that contain tokens or the config file.
+Your `Config/*.toml` files are git-ignored and kept at mode 600 (only the templates are committed). `provider.toml` is read only by preflight: `perseus.py` never loads the Hugging Face token, and the token is scrubbed from caches after the download. Each tool's key sits in its own `tooling.toml` section; only that tool's process reads it (the sandbox broker for `run_code`), and no key ever reaches `perseus.resolved.toml`. Backups in `Config/.backup/` are private (mode 700) and git-ignored too. The pre-commit hook above blocks commits that contain tokens or your config files.
 
 ## License
 

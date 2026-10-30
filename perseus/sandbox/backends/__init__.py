@@ -22,7 +22,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-SECRET_KEY = "code_runner_api_key"     # [secrets] code_runner_api_key in perseus.toml, next to hf_token
+SECRET_KEY = "api_key"                 # [code_runner] api_key in Config/tooling.toml, beside the tool's settings
+LEGACY_SECRET = ("secrets", "code_runner_api_key")   # where a single-file perseus.toml kept it before the split
+TOOLING_FILE = "tooling.toml"
 
 
 # ---------------------------------------------------------------- errors
@@ -100,20 +102,37 @@ def fingerprint(key: str) -> str:
     return f"{prefix}…{key[-4:]}"
 
 
+def tooling_file(config_path: str | Path) -> Path:
+    """Config/tooling.toml for a Config folder; the file itself for a single-file config."""
+    path = Path(config_path).expanduser()
+    if path.is_dir() or path.suffix != ".toml":
+        return path / TOOLING_FILE
+    if path.name == "perseus.toml" and not path.exists() and (path.parent / "Config" / TOOLING_FILE).is_file():
+        # a resolved file from before the split still names the old perseus.toml, which
+        # configuration.sh has since moved into Config/: follow it there until preflight re-runs
+        return path.parent / "Config" / TOOLING_FILE
+    return path
+
+
 def config_secret(config_path: str) -> str:
-    """[secrets] code_runner_api_key from perseus.toml. Called by the broker process only, never by Perseus."""
+    """[code_runner] api_key from Config/tooling.toml. Called by the broker process only, never by Perseus.
+
+    Opens tooling.toml alone, so the broker never reads the Hugging Face token in provider.toml.
+    A single-file config's old [secrets] code_runner_api_key still works until it's migrated."""
     if not config_path:
         return ""
+    path = tooling_file(config_path)
     try:
-        data = tomllib.loads(Path(config_path).expanduser().read_text())
+        data = tomllib.loads(path.read_text())
     except (OSError, tomllib.TOMLDecodeError) as e:
-        raise SandboxError("config", f"can't read {config_path} for [secrets] {SECRET_KEY} ({type(e).__name__})")
-    key = str((data.get("secrets") or {}).get(SECRET_KEY) or "").strip()
+        raise SandboxError("config", f"can't read {path} for [code_runner] {SECRET_KEY} ({type(e).__name__})")
+    key = str((data.get("code_runner") or {}).get(SECRET_KEY)
+              or (data.get(LEGACY_SECRET[0]) or {}).get(LEGACY_SECRET[1]) or "").strip()
     return "" if key == "e2b_..." else key
 
 
 # ---------------------------------------------------------------- discovery
-# name -> "module:Class". Only names listed in CONFIGURABLE may be chosen in perseus.toml;
+# name -> "module:Class". Only names listed in CONFIGURABLE may be chosen in tooling.toml;
 # the others exist for tests and development.
 BACKENDS = {
     "e2b": "perseus.sandbox.backends.e2b:E2BBackend",

@@ -5,4 +5,4 @@ from pathlib import Path
 __version__ = "0.1.0"
 
 ROOT = Path(__file__).resolve().parent.parent          # the git checkout: code and config only
-EXAMPLE_PATH = ROOT / "perseus.example.toml"
+CONFIG_TEMPLATES = ROOT / "Config" / "templates"   # provider, settings and tooling templates

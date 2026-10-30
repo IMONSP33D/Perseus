@@ -7,8 +7,8 @@ repos:
       - id: gitleaks
   - repo: local
     hooks:
-      - id: no-perseus-toml
-        name: perseus.toml holds secrets and must never be committed
-        entry: perseus.toml must not be committed (only perseus.example.toml)
+      - id: no-perseus-config
+        name: your config holds secrets and must never be committed
+        entry: Config/*.toml and perseus.toml must not be committed (only Config/templates/)
         language: fail
-        files: ^perseus(\.resolved)?\.toml$
+        files: ^(perseus(\.resolved)?\.toml|Config/[^/]+\.toml|Config/\.(base|backup)/.*)$

@@ -131,8 +131,9 @@ class DoctorWithStubSDK(unittest.TestCase):
         conn.ConnectionConfig = lambda api_key=None: types.SimpleNamespace(api_url="https://api.e2b.app", domain="e2b.app")
         self.patch = mock.patch.dict(sys.modules, {"e2b": stub, "e2b.connection_config": conn})
         self.patch.start()
-        self.toml = Path(tempfile.mkdtemp()) / "perseus.toml"
-        self.toml.write_text(f'[secrets]\ncode_runner_api_key = "{KEY}"\n\n[code_runner]\nnetwork = "none"\n')
+        self.toml = Path(tempfile.mkdtemp()) / "Config"
+        self.toml.mkdir()
+        (self.toml / "tooling.toml").write_text(f'[code_runner]\napi_key = "{KEY}"\nnetwork = "none"\n')
 
     def tearDown(self):
         self.patch.stop()
@@ -147,7 +148,7 @@ class DoctorWithStubSDK(unittest.TestCase):
     def test_full_check_prints_where_code_runs(self):
         code, out = self.run_doctor()
         self.assertEqual(code, 0, out)
-        self.assertIn("key e2b_…3f9a from perseus.toml", out)
+        self.assertIn("key e2b_…3f9a from tooling.toml [code_runner] api_key", out)
         self.assertIn("E2B created sandbox isbx1", out)
         self.assertIn("listed among this key's team's", out)
         self.assertIn("pwd /home/user/job", out)

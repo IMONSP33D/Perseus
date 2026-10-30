@@ -1,8 +1,8 @@
 """Check the code runner end to end and show exactly where code runs.
 
-    uv run python -m perseus.sandbox.doctor [--config perseus.toml]
+    uv run python -m perseus.sandbox.doctor [--config Config]
 
-Uses the same key, template and network level as Perseus (from perseus.toml) and prints:
+Uses the same key, template and network level as Perseus (from Config/tooling.toml) and prints:
   1. which key it uses (as a fingerprint, e.g. e2b_…3f9a), where it came from, and the API host
   2. any E2B_* environment variables that would redirect the SDK
   3. a real sandbox: the id E2B returns, and how long it took to create
@@ -24,7 +24,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from perseus.sandbox.backends import SandboxError, SessionSpec, config_secret, fingerprint
+from perseus.sandbox.backends import SandboxError, SessionSpec, config_secret, fingerprint, tooling_file
 from perseus.sandbox.backends.e2b import SDK_ENV
 
 OK, BAD, WARN = "✓", "✗", "!"
@@ -36,12 +36,12 @@ def say(mark: str, msg: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m perseus.sandbox.doctor")
-    p.add_argument("--config", default="perseus.toml", help="perseus.toml to read (default: ./perseus.toml)")
+    p.add_argument("--config", default="Config", help="the Config folder (or a single .toml) to read (default: ./Config)")
     a = p.parse_args(argv)
     print("Perseus code runner check\n")
 
     # 1. configuration and key ---------------------------------------------------------------
-    path = Path(a.config).expanduser()
+    path = tooling_file(a.config)
     cfg: dict = {}
     if path.is_file():
         cfg = (tomllib.loads(path.read_text()).get("code_runner") or {})
@@ -57,15 +57,15 @@ def main(argv: list[str] | None = None) -> int:
     except SandboxError as e:
         say(BAD, str(e))
         return 1
-    source = "perseus.toml [secrets] code_runner_api_key" if key else "E2B_API_KEY environment variable"
+    source = "tooling.toml [code_runner] api_key" if key else "E2B_API_KEY environment variable"
     key = key or (os.environ.get("E2B_API_KEY") or "").strip()
     if not key:
-        say(BAD, "no key: set [secrets] code_runner_api_key in perseus.toml")
+        say(BAD, "no key: set [code_runner] api_key in Config/tooling.toml")
         return 1
     say(OK, f"key {fingerprint(key)} from {source}  (match the last 4 characters in E2B's dashboard › API Keys)")
-    if source.startswith("perseus.toml") and os.environ.get("E2B_API_KEY", "").strip() not in ("", key):
+    if source.startswith("tooling.toml") and os.environ.get("E2B_API_KEY", "").strip() not in ("", key):
         say(WARN, f"E2B_API_KEY in this shell is a DIFFERENT key ({fingerprint(os.environ['E2B_API_KEY'])}); "
-                  "Perseus uses the perseus.toml one")
+                  "Perseus uses the tooling.toml one")
 
     # 2. environment that would redirect the SDK ----------------------------------------------
     present = [n for n in SDK_ENV if n != "E2B_API_KEY" and os.environ.get(n)]

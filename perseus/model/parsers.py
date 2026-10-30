@@ -3,7 +3,7 @@
 VERIFY IN PHASE 0: these names match vLLM releases up to mid-2026; check them
 against `vllm serve --help` (--tool-call-parser / --reasoning-parser choices)
 for the pinned 0.32.0. The boot tool-call test catches a wrong pick either way,
-and [model] tool_parser / reasoning_parser in perseus.toml override auto.
+and [model] tool_parser / reasoning_parser in Config/settings.toml override auto.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def pick(meta: ModelMeta, tool_override: str = "auto", reasoning_override: str =
         tool = rule.tool
     else:
         raise ParserError(f"no known tool-call parser for {meta.repo_id} (model_type {meta.model_type!r}); "
-                          "set [model] tool_parser in perseus.toml (see `vllm serve --help`)")
+                          "set [model] tool_parser in Config/settings.toml (see `vllm serve --help`)")
 
     if reasoning_override == "none":
         reasoning = None
