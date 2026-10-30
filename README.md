@@ -27,7 +27,7 @@ Perseus turns a Linux GPU box and an open-weight model into a private assistant 
 
 You bring a GPU server and pick a model from Hugging Face. Perseus does the rest: it works out how to fit the model on your hardware, downloads it, starts it, checks that it works, and gives you a dashboard in your browser to chat with it.
 
-While it answers, the model can use a handful of **agent functions**: search the web, read pages, do exact maths, run code in a throwaway sandbox, and give you files to download. Every call shows up in a live feed, so you can see exactly what it did and why something was blocked.
+While it answers, the model can use a handful of agent functions: search the web, read pages, do exact maths, run code in a throwaway sandbox, and give you files to download. Every call shows up in a live feed, so you can see exactly what it did and why something was blocked.
 
 Nothing leaves your box unless Perseus has checked it first. The model never touches the network directly, the dashboard only listens on the box itself, and you reach it through an SSH tunnel.
 
@@ -35,16 +35,16 @@ Nothing leaves your box unless Perseus has checked it first. The model never tou
 
 | | |
 | --- | --- |
-| **A GPU server** | Linux (Ubuntu or Debian are tested) with at least one NVIDIA GPU. 24 GB of GPU memory or more is a good start. Rented cloud boxes work well. |
-| **NVIDIA driver 580 or newer** | Most GPU images ship one. On a plain VM, Perseus can install it for you. |
-| **Disk space** | Enough for the model's weights (the check tells you how much), plus about 10 GB for Perseus's Python environment. |
-| **A Hugging Face account** | Only if your model is gated (for example Llama). Make an [access token](https://huggingface.co/settings/tokens). |
-| **On the box** | `bash`, `git` and `python3`. Everything else (uv, Python 3.12, vLLM, the search engine) is installed for you. |
-| **Optional: an E2B account** | Only for the code runner. The free plan is enough for one person. |
+| A GPU server | Linux (Ubuntu or Debian are tested) with at least one NVIDIA GPU. 24 GB of GPU memory or more is a good start. Rented cloud boxes work well. |
+| NVIDIA driver 580 or newer | Most GPU images ship one. On a plain VM, Perseus can install it for you. |
+| Disk space | Enough for the model's weights (the check tells you how much), plus about 10 GB for Perseus's Python environment. |
+| A Hugging Face account | Only if your model is gated (for example Llama). Make an [access token](https://huggingface.co/settings/tokens). |
+| On the box | `bash`, `git` and `python3`. Everything else (uv, Python 3.12, vLLM, the search engine) is installed for you. |
+| Optional: an E2B account | Only for the code runner. The free plan is enough for one person. |
 
 ## Installing Perseus
 
-Do steps 1–7 **on the GPU server**, over SSH. Step 8 happens on **your own computer**.
+Do steps 1 to 7 on the GPU server, over SSH. Step 8 happens on your own computer.
 
 ### 1. Get the code
 
@@ -89,9 +89,9 @@ hf_token = "hf_..."           # only needed for gated or private models
 
 A few tips on picking a model:
 
-- **Match it to your GPU memory.** An already-quantized repo (names ending in `-AWQ`, `-GPTQ` or `-FP8`) fits far more model into less memory. As a guide, a 32B AWQ model on one 24 GB card runs with about 13K tokens of context. Step 5 tells you exactly what you'll get before anything is downloaded.
-- **Gated models** need you to accept the licence on the model's Hugging Face page, with the same account as your token.
-- **Models that can call tools** work best, because the agent functions depend on it. Perseus picks the right tool-call format for the model and tests it on first boot.
+- Match it to your GPU memory. An already-quantized repo (names ending in `-AWQ`, `-GPTQ` or `-FP8`) fits far more model into less memory. As a guide, a 32B AWQ model on one 24 GB card runs with about 13K tokens of context. Step 5 tells you exactly what you'll get before anything is downloaded.
+- Gated models need you to accept the licence on the model's Hugging Face page, with the same account as your token.
+- Pick a model that can call tools, because the agent functions depend on it. Perseus picks the right tool-call format for the model and tests it on first boot.
 
 ### 4. (Optional) Turn on the code runner
 
@@ -119,7 +119,7 @@ Data directory
   ✓ data directory: /workspace/perseus (weights in weights/Qwen/…)
 ```
 
-If the model doesn't fit, it says so and suggests what would. Fix the config and run it again. It's much cheaper to find out here than after a 100 GB download.
+If the model doesn't fit, it says so and suggests what would. Fix the config and run it again; finding out here costs seconds instead of a long download.
 
 ### 6. Prepare the box
 
@@ -129,16 +129,16 @@ bash preflight.sh
 
 This does the real work, in six steps. Each one prints a ✓ when it's done:
 
-1. **NVIDIA driver.** Checks it's new enough.
-2. **Python environment.** Installs `git` and `curl` if missing, then uv and Python 3.12.
-3. **Checks.** Everything from step 5, again.
-4. **vLLM**, the model server, plus a quick test that it can use your GPU. This takes a few minutes.
-5. **SearXNG**, a private search engine that runs on the box.
-6. **The model download**, with a live progress panel. Your Hugging Face token is wiped from the box's caches afterwards.
+1. NVIDIA driver: checks it's new enough.
+2. Python environment: installs `git` and `curl` if they're missing, then uv and Python 3.12.
+3. Checks: everything from step 5, again.
+4. vLLM, the model server, plus a quick test that it can use your GPU. This takes a few minutes.
+5. SearXNG, a private search engine that runs on the box.
+6. The model download, with a live progress panel. Afterwards your Hugging Face token is wiped from the box's caches.
 
 You can stop it and run it again at any time. Finished steps are skipped, and an interrupted download picks up where it left off.
 
-The big files (weights, logs, the search engine) go into a **data directory** on the fastest disk with enough room, not into your checkout. Preflight tells you where it put it.
+The big files (weights, logs, the search engine) go into a data directory on the fastest disk with enough room, not into your checkout. Preflight tells you where it put it.
 
 ### 7. Start Perseus
 
@@ -152,7 +152,7 @@ The first start takes longest, while the model loads onto the GPU.
 
 ### 8. Open the dashboard (on your own computer)
 
-The dashboard only listens on the server itself, so you reach it through an SSH tunnel. In a terminal **on your own computer**, run the command Perseus printed. It looks like this:
+The dashboard only listens on the server itself, so you reach it through an SSH tunnel. In a terminal on your own computer, run the command Perseus printed. It looks like this:
 
 ```bash
 ssh -N -o ExitOnForwardFailure=yes -L 8080:127.0.0.1:8080 you@your-gpu-box
@@ -162,7 +162,7 @@ Leave that running. Then open the link Perseus printed (`http://127.0.0.1:8080/?
 
 Perseus's terminal says `✓ a browser signed in` when you arrive. If you lose the link, it's saved in `run/dashboard.url` inside the data directory.
 
-To stop Perseus, press **Ctrl-C** in its terminal. That also stops the model and the search engine.
+To stop Perseus, press Ctrl-C in its terminal. That also stops the model and the search engine.
 
 ### If something goes wrong
 
@@ -202,14 +202,12 @@ bash preflight.sh
 python3 perseus.py
 ```
 
-What step 4 updates:
+What step 4 does:
 
-- **Your config.** New settings are added with their defaults. Anything you changed yourself (model, keys, ports) is never touched. Defaults you never changed follow the new version. Your old files are backed up first, to `Config/.backup/<time>/`.
-- **Python packages and vLLM.** Moved to the exact versions the new release pins.
-- **The search engine.** Moved to its new pinned version, if that changed.
-- **The model.** Already downloaded and verified, so it's skipped.
-
-If a setting was removed in the new version, the update lists it and keeps a copy in the backup. Nothing is silently dropped.
+- Updates your config. New settings arrive with their defaults, and defaults you never changed follow the new version. Anything you set yourself (model, keys, ports) is left alone. If a setting was removed, it's listed on screen. Your old files are copied to `Config/.backup/<time>/` first.
+- Moves Python packages and vLLM to the exact versions the new release pins.
+- Moves the search engine to its new pinned version, if that changed.
+- Skips the model download, since it's already there and verified.
 
 ### Changing to a different model
 
@@ -232,25 +230,25 @@ If you want your config exactly as it was too, copy the files back from the matc
 
 ## Using the dashboard
 
-The left sidebar has **New chat**, two quick switches, the **Agent Functions** page and your recent chats. The gear in the header opens Settings.
+The left sidebar has New chat, two quick switches, the Agent Functions page and your recent chats. The gear in the header opens Settings.
 
 | Control | What it does |
 | --- | --- |
-| **Internet Access** | Off: the model can't search or read web pages. The code runner isn't affected. |
-| **Show Thinking** | Shows or hides the model's thinking above each answer. |
-| **Thinking: Off … Max** | How long the model may think before answering (Low 4K, Medium 16K, High 32K tokens, or Max). When it runs out, Perseus wraps up and says so. |
-| **Context ring** | How much of the model's memory the last answer used. |
-| **Close out** | While it's working: stop thinking and researching, and write the answer now. |
-| **Stop** | The send button turns into Stop while an answer runs. You keep what it wrote so far. |
-| **Attach** | Add up to five text files, 60 MB in total, to a message. Each shows its size. A file bigger than the model's memory can't be read in full. |
-| **Tool feed** | The right-hand panel: every function call, its arguments, its result, and why it was blocked if it was. |
-| **View raw** | Under each answer: exactly what was sent to the model and what it sent back. |
+| Internet Access | Off: the model can't search or read web pages. The code runner isn't affected. |
+| Show Thinking | Shows or hides the model's thinking above each answer. |
+| Thinking: Off … Max | How long the model may think before answering (Low 4K, Medium 16K, High 32K tokens, or Max). When it runs out, Perseus wraps up and says so. |
+| Context ring | How much of the model's memory the last answer used. |
+| Close out | While it's working: stop thinking and researching, and write the answer now. |
+| Stop | The send button turns into Stop while an answer runs. You keep what it wrote so far. |
+| Attach | Add up to five text files, 60 MB in total, to a message. Each shows its size. A file bigger than the model's memory can't be read in full. |
+| Tool feed | The right-hand panel: every function call, its arguments, its result, and why it was blocked if it was. |
+| View raw | Under each answer: exactly what was sent to the model and what it sent back. |
 
-**Settings** let you choose a role for the model (Engineer, Planner, Researcher or your own prompt), its memory size (8K, 32K, 128K or Max; options that don't fit your GPU are greyed out), creativity, answer length, research depth and which search engines to use.
+In Settings you can choose a role for the model (Engineer, Planner, Researcher or your own prompt), its memory size (8K, 32K, 128K or Max; options that don't fit your GPU are greyed out), creativity, answer length, research depth and which search engines to use.
 
-Chats are kept in memory on the server and disappear when Perseus stops. **Export all chats** in Settings saves them as a JSON file.
+Chats are kept in memory on the server and disappear when Perseus stops. Export all chats, in Settings, saves them as a JSON file.
 
-**Development Pipelines** is greyed out for now: it's a multi-step workflow feature that isn't finished yet.
+Development Pipelines is greyed out for now. It's a multi-step workflow feature that isn't finished yet.
 
 ## Agent functions
 
@@ -258,7 +256,7 @@ Chats are kept in memory on the server and disappear when Perseus stops. **Expor
   <img src="docs/screenshot-functions.png" alt="The Agent Functions page: six function tiles with Web or Local badges, and the details of output_file with its arguments" width="100%">
 </p>
 
-These are what the model can do while it answers. Open **Agent Functions** in the sidebar and hover over one to see what it does and the arguments it takes.
+These are what the model can do while it answers. Open Agent Functions in the sidebar and hover over one to see what it does and the arguments it takes.
 
 | Function | What it does |
 | --- | --- |
@@ -295,7 +293,7 @@ The rules:
 
 `run_code` lets the model test its code before giving it to you. Each run happens in a brand-new virtual machine on [E2B](https://e2b.dev), which is deleted straight afterwards. Nothing runs on your GPU server.
 
-**Setting it up**
+To set it up:
 
 1. Create an API key at [e2b.dev](https://e2b.dev) and add it to `Config/tooling.toml`:
    ```toml
@@ -314,7 +312,7 @@ The rules:
 
 If you skip step 2, you get E2B's standard image, which has Python, JavaScript and Bash only. With the full image you also get C, C++, Rust, Go and Java. Perseus checks which languages are really there and only offers those.
 
-**What programs can reach** is set by `network` in `[code_runner]`:
+What programs can reach is set by `network` in `[code_runner]`:
 
 | `network` | Programs can reach |
 | --- | --- |
@@ -322,7 +320,7 @@ If you skip step 2, you get E2B's standard image, which has Python, JavaScript a
 | `"packages"` (default) | Package registries only (pip, npm, cargo, Go and Maven), so installs work |
 | `"full"` | The whole internet |
 
-Perseus tests the network from inside a real sandbox at startup. If programs can reach more than the setting allows, it turns the code runner off rather than run it unsafely.
+Perseus tests the network from inside a real sandbox at startup. If programs can reach more than the setting allows, it turns the code runner off.
 
 To check where your code actually runs, run `~/.local/bin/uv run python -m perseus.sandbox.doctor`. It creates one sandbox with your key, shows its E2B id and what it reports about itself, then deletes it. Every run is also logged in `logs/sandbox.log`, without the code or its output.
 
@@ -335,7 +333,7 @@ Your settings are in the three files in `Config/` (see [step 2](#2-create-your-c
 - After changing the model or sizing settings, run `bash preflight.sh` again before starting Perseus.
 - To change one setting for a single run: `bash preflight.sh --model.id Qwen/Qwen3-32B-AWQ`.
 
-**The settings you're most likely to change**
+These are the settings you're most likely to change:
 
 | Setting | File | What it does |
 | --- | --- | --- |
@@ -384,13 +382,13 @@ To keep your config somewhere else, pass `--config DIR` to both `preflight.sh` a
 
 Perseus assumes the model might be tricked (for example by a web page telling it to do something), so it checks everything the model asks for before anything happens.
 
-- **Every function call is checked.** Malformed or unexpected arguments are refused without running, and there's a limit on how much web research one answer can do.
-- **Web access is read-only.** The gateway only ever downloads; it can't post forms or log in. It refuses private and internal addresses, URLs carrying secrets, and tricks such as disguised IP addresses, and it rechecks every redirect.
-- **Web content is labelled.** Pages and program output reach the model marked as untrusted data, and text that looks like instructions is flagged in the feed.
-- **No other network access.** Any other connection attempt from Perseus is refused.
-- **Code runs elsewhere.** Programs only ever run in remote, throwaway sandboxes, and the sandbox key never reaches the model's process.
-- **The model server is locked down.** It runs offline, on the box only, with a fresh key each boot and no Hugging Face token.
-- **The dashboard needs a sign-in**, accepts changes only from its own page, and shows model and web text as plain text, never as code.
+- Every function call is checked. Malformed or unexpected arguments are refused without running, and one answer can only do so much web research.
+- Web access is read-only: the gateway downloads pages but can't post forms or log in. It refuses private and internal addresses, URLs carrying secrets, and disguised IP addresses, and it rechecks every redirect.
+- Pages and program output reach the model marked as untrusted data, and text that looks like instructions is flagged in the feed.
+- Perseus refuses any other outgoing connection.
+- Programs only run in remote, throwaway sandboxes, and the sandbox key never reaches the model's process.
+- The model server runs offline, on the box only, with a fresh key each boot and no Hugging Face token.
+- The dashboard needs a sign-in and accepts changes only from its own page. Model and web text are shown as plain text, so they can't run as code in your browser.
 
 Before Perseus starts, it runs 21 of these refusal checks and won't start if any of them fail.
 
@@ -469,7 +467,7 @@ For scripts, send `Authorization: Bearer <token>`, using the token from the sign
 <details>
 <summary><b>Where things are</b></summary>
 
-Perseus keeps two places separate: **the checkout** you cloned (code and config) and **the data directory** that preflight makes on your fastest disk (weights, logs, the search engine). Nothing big or secret goes in the checkout.
+Perseus keeps two places separate: the checkout you cloned (code and config), and the data directory that preflight makes on your fastest disk (weights, logs, the search engine). Nothing big or secret goes in the checkout.
 
 ```
 perseus/                     the checkout
@@ -500,28 +498,28 @@ The one large thing in the checkout is the Python environment, `.venv` (about 10
 
 </details>
 
-**Running the tests** needs no GPU, network or extra packages, and takes under a minute:
+The tests need no GPU, network or extra packages, and take under a minute:
 
 ```bash
 python3 -m unittest discover -s tests -t .
 ```
 
-**Trying the checks without a GPU**, against a recorded machine and model:
+To try the preflight checks without a GPU, run them against a recorded machine and model:
 
 ```bash
 PERSEUS_FAKE_HW=tests/fixtures/hw_1x4090.json \
   python3 -m setup.check_config check --meta-file tests/fixtures/meta_qwen25_32b_awq.json
 ```
 
-**Before your first commit**, install the hook that stops tokens and config files being committed:
+Before your first commit, install the hook that stops tokens and config files being committed:
 
 ```bash
 ~/.local/bin/uvx pre-commit install
 ```
 
-**Changing the config format?** Edit `Config/templates/` and `perseus/config.py` together. If you rename or move a setting, add a line to `MOVES` in [`Config/update.py`](Config/update.py) so people's existing configs follow it on their next update.
+If you change the config format, edit `Config/templates/` and `perseus/config.py` together. If you rename or move a setting, add a line to `MOVES` in [`Config/update.py`](Config/update.py) so people's existing configs follow it on their next update.
 
-**Testing the code runner against E2B** (uses your key and costs a few cents):
+To test the code runner against E2B (this uses your key and costs a few cents):
 
 ```bash
 PERSEUS_TEST_E2B=1 ~/.local/bin/uv run python -m unittest tests.test_sandbox_conformance
@@ -533,4 +531,4 @@ Perseus is free software under the [GNU Affero General Public License v3.0](LICE
 
 Copyright © 2026 IMONSP33D. As the copyright holder, the maintainer may also offer Perseus under other terms, including commercial licences, and may release future versions under a different licence. Versions already released under the AGPL stay available under it.
 
-**Contributing:** so the project can keep offering other terms, contributions are accepted under a Contributor Licence Agreement that lets the maintainer relicense them. Please open an issue before sending a pull request.
+Contributions are accepted under a Contributor Licence Agreement that lets the maintainer relicense them, so the project can keep offering other terms. Please open an issue before sending a pull request.
