@@ -62,7 +62,7 @@ def _lines(text: str) -> int:
                   "document, a source file or a CSV. Use it when the user asks for a file or for raw content "
                   "(Markdown source, code) that shouldn't be rendered in the chat. Pass the complete file "
                   "content. The file is not shown in your answer, so mention it in a sentence; don't repeat "
-                  "its content. One file per call.",
+                  "its content. One file per call; call it again for each further file.",
       parameters={"type": "object", "properties": {
           "filename": {"type": "string", "minLength": 1, "maxLength": 120,
                        "description": "File name with extension, e.g. 'README.md' or 'scrape.py'."},

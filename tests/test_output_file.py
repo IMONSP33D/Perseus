@@ -98,6 +98,21 @@ class EngineTests(unittest.TestCase):
         self.assertIsNone(e.feed.events[0].file)
 
 
+class TwoFileLLM:
+    """Delivers two files in one step (parallel tool calls), then a third in the next step."""
+
+    def chat(self, messages, tools=None, tool_choice="auto", max_tokens=None, on_text=None, should_stop=None, extra=None):
+        done = sum(1 for m in messages if m["role"] == "tool")
+        call = lambda i, name: {"id": f"f{i}", "type": "function", "function": {
+            "name": "output_file", "arguments": json.dumps({"filename": name, "content": f"# {name}\n"})}}
+        if done == 0:
+            return Reply(tool_calls=[call(1, "a.md"), call(2, "b.py")], finish_reason="tool_calls")
+        if done == 2:
+            return Reply(tool_calls=[call(3, "c.csv")], finish_reason="tool_calls")
+        on_text and on_text("Three files.", False)
+        return Reply(content="Three files.", finish_reason="stop")
+
+
 class DashboardTests(unittest.TestCase):
     def setUp(self):
         self.llm = FileLLM(filename="page.html", content="<script>alert(1)</script>\n")
@@ -131,6 +146,16 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(r.getheader("Content-Disposition"), 'attachment; filename="page.html"')
         self.assertTrue(r.getheader("Content-Type").startswith("text/html"))
         self.assertEqual(r.getheader("X-Content-Type-Options"), "nosniff")
+
+    def test_several_files_in_one_answer(self):
+        _, chat = self.c.req("POST", "/api/chats", {})
+        self.srv.dash.get(chat["id"]).engine.llm = TwoFileLLM()
+        _, events = self.c.stream(chat["id"], "make three files")
+        done = next(e for e in events if e["type"] == "done")["message"]
+        self.assertEqual([f["name"] for f in done["files"]], ["a.md", "b.py", "c.csv"])
+        for f in done["files"]:
+            r, body = self.c.req("GET", f"/api/chats/{chat['id']}/files/{f['id']}", raw=True)
+            self.assertEqual(body.decode(), f"# {f['name']}\n")
 
     def test_download_needs_auth_and_a_real_file(self):
         _, chat = self.c.req("POST", "/api/chats", {})

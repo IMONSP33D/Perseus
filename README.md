@@ -206,7 +206,7 @@ The sidebar holds a new chat button, quick toggles (Internet Access, Show Thinki
 | **Send / Stop** | While an answer runs, the send button stops it and keeps the partial answer. |
 | **Tool feed** | Every call with its status (OK, Blocked, Refused, Error, Cached, Stopped), its reason, and the exact arguments and result. Earlier questions fold into one row each. |
 | **View raw** | Under each answer: the prompt after the chat template, token counts and the model's raw output per step. |
-| **Attach** | Text files up to 200 KB each, five per message. |
+| **Attach** | Text files, up to five and 60 MB in total per message; each shows its size. A file larger than the model's context can't be read in full. |
 
 <details>
 <summary><b>Settings</b></summary>

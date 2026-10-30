@@ -40,7 +40,7 @@ THINKING = ("off", "low", "medium", "high", "max")
 THINK_BUDGET = {"off": 0, "low": 4096, "medium": 16384, "high": 32768, "max": None}
 CONTEXT_STEPS = (("8k", 8192), ("32k", 32768), ("128k", 131072))
 MAX_PROMPT_CHARS = 8000
-MAX_MESSAGE_CHARS = 400_000
+MAX_MESSAGE_CHARS = 64_000_000       # the typed text plus up to 60 MB of attached files
 
 
 class BadRequest(Exception):

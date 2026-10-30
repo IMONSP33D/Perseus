@@ -31,6 +31,7 @@
   }
 
   const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const fileSize = (n) => (n < 1024 ? `${n} B` : kb(n));   // a chip or card size: 512 B, 234 KB, 1.2 MB
   const kb = (n) => n >= 1024 * 1024 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
   const secs = (ms) => (ms / 1000).toFixed(1) + ' s';
   const tokensLabel = (n) => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'K' : String(n);
@@ -66,6 +67,7 @@
     thinkOpen: {},           // message id -> bool
     fileOpen: {},            // chat id + file id -> preview open
     fileText: {},            // chat id + file id -> fetched content (or { error })
+    thinkTouched: {},        // message id -> time of the reader's last input in its thinking box
     thinkFollow: {},         // message id -> false once the reader scrolls up in a streaming thinking box
     menuOpen: false,
     attachments: [],
@@ -263,7 +265,7 @@
     const inChat = ui.view === 'chat';
     const c = active();
     $('header-title').textContent = inSettings ? 'Settings' : ui.view === 'pipelines' ? 'Development Pipelines'
-      : ui.view === 'tools' ? 'Tools' : (c ? c.title : 'New chat');
+      : ui.view === 'tools' ? 'Agent Functions' : (c ? c.title : 'New chat');
     $('chat-controls').hidden = !inChat;
     const gear = $('gear');
     gear.setAttribute('aria-pressed', String(inSettings));
@@ -370,16 +372,22 @@
   }
 
   // The thinking box follows new text while it streams, unless the reader has scrolled up in it;
-  // scrolling back to the bottom (or "Jump to latest") follows again.
+  // scrolling back to the bottom (or "Jump to latest") follows again. Only the reader's own input
+  // (wheel, touch, keys, dragging the scrollbar) changes that: our auto-scroll fires scroll events
+  // too, at a moment that differs between browsers, so a scroll event alone proves nothing.
+  const readerScrolling = (id) => performance.now() - (ui.thinkTouched[id] || -1e9) < 1000;
+  const thinkAtEnd = (box) => box.scrollHeight - box.scrollTop - box.clientHeight < 24;
   function thinkBox(m) {
     const box = h('div', { class: 'think-text', 'data-think': m.id }, m.reasoning);
     const live = m.streaming && m.phase !== 'answering';
     if (!live) return box;
-    const jump = h('button', { type: 'button', class: 'think-jump', hidden: ui.thinkFollow[m.id] !== false,
+    const jump = h('button', { type: 'button', class: 'think-jump', hidden: true,
       onclick: () => { ui.thinkFollow[m.id] = true; box.scrollTop = box.scrollHeight; jump.hidden = true; } }, 'Jump to latest ↓');
+    const reader = () => { ui.thinkTouched[m.id] = performance.now(); };
+    for (const type of ['wheel', 'touchmove', 'keydown', 'pointerdown']) box.addEventListener(type, reader, { passive: true });
     box.addEventListener('scroll', () => {
-      if (box.dataset.restoring) return;          // our own scroll, not the reader's
-      const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+      if (!readerScrolling(m.id)) return;    // not the reader: our own scroll, or layout
+      const atEnd = thinkAtEnd(box);
       ui.thinkFollow[m.id] = atEnd;
       jump.hidden = atEnd;
     });
@@ -388,67 +396,11 @@
   function placeThinkBox(el, m, prevTop) {
     const box = el.querySelector('.think-text');
     if (!box) return;
-    box.dataset.restoring = '1';
-    if (m.streaming && ui.thinkFollow[m.id] !== false) box.scrollTop = box.scrollHeight;
+    const follow = ui.thinkFollow[m.id] !== false;
+    if (m.streaming && follow) box.scrollTop = box.scrollHeight;
     else if (prevTop != null) box.scrollTop = prevTop;
-    requestAnimationFrame(() => { delete box.dataset.restoring; });
-  }
-
-  // Files the model handed over with output_file: a card each, under the answer.
-  // The content is fetched on demand and only ever shown as text (Preview) or downloaded.
-  const fileUrl = (cid, f) => `/api/chats/${encodeURIComponent(cid)}/files/${encodeURIComponent(f.id)}`;
-  async function fileContent(cid, f) {
-    const key = cid + ':' + f.id;
-    if (typeof ui.fileText[key] === 'string') return ui.fileText[key];
-    const r = await fetch(fileUrl(cid, f), { credentials: 'same-origin' });
-    if (!r.ok) throw new Error(r.status === 404 ? 'file not found' : r.statusText);
-    return (ui.fileText[key] = await r.text());
-  }
-  function fileList(m) {
-    const c = active();
-    if (!c) return null;
-    return h('div', { class: 'files' }, m.files.map((f) => fileCard(c.id, m, f)));
-  }
-  function fileCard(cid, m, f) {
-    const key = cid + ':' + f.id;
-    const open = !!ui.fileOpen[key];
-    const meta = [f.language && f.language !== 'text' ? f.language : null,
-      f.lines != null ? `${f.lines} line${f.lines === 1 ? '' : 's'}` : null,
-      f.bytes != null ? (f.bytes < 1024 ? f.bytes + ' B' : kb(f.bytes)) : null].filter(Boolean).join(' · ');
-    const copyBtn = h('button', { type: 'button', class: 'file-btn', 'aria-label': `Copy ${f.name}` }, icon('copy'), h('span', { text: 'Copy' }));
-    copyBtn.addEventListener('click', async () => {
-      let ok = false;
-      try { ok = await copyText(await fileContent(cid, f)); } catch (e) { banner(e.message); }
-      copyBtn.replaceChildren(icon(ok ? 'check' : 'x'), h('span', { text: ok ? 'Copied' : 'Copy failed' }));
-      clearTimeout(copyBtn._t);
-      copyBtn._t = setTimeout(() => copyBtn.replaceChildren(icon('copy'), h('span', { text: 'Copy' })), 1600);
-    });
-    const previewBtn = h('button', { type: 'button', class: 'file-btn', 'aria-expanded': String(open),
-      'aria-label': `${open ? 'Hide' : 'Preview'} ${f.name}`,
-      onclick: async () => {
-        ui.fileOpen[key] = !open;
-        if (!open && typeof ui.fileText[key] !== 'string') {
-          try { await fileContent(cid, f); } catch (e) { ui.fileText[key] = { error: e.message }; }
-        }
-        replaceMessage(m);
-      } }, icon('eye'), h('span', { text: open ? 'Hide' : 'Preview' }));
-    const download = h('a', { class: 'file-btn', href: fileUrl(cid, f), download: f.name, 'aria-label': `Download ${f.name}` },
-      icon('download'), h('span', { text: 'Download' }));
-    const text = ui.fileText[key];
-    const preview = !open ? null
-      : typeof text === 'string' ? h('div', { class: 'file-preview' }, codeBlock(text, f.language))
-      : text && text.error ? h('p', { class: 'note-warn', text: `Couldn't load the file: ${text.error}` })
-      : h('p', { class: 'waiting', text: 'Loading…' });
-    const fileIcon = icon('file'); fileIcon.classList.add('file-icon');
-    return h('div', { class: 'file-card' },
-      h('div', { class: 'file-head' },
-        fileIcon,
-        h('div', { class: 'file-info' },
-          h('span', { class: 'file-name', text: f.name }),
-          meta ? h('span', { class: 'file-meta', text: meta }) : null),
-        h('div', { class: 'file-actions' }, previewBtn, copyBtn, download)),
-      f.description ? h('p', { class: 'file-desc', text: f.description }) : null,
-      preview);
+    const jump = el.querySelector('.think-jump');
+    if (jump) jump.hidden = follow || thinkAtEnd(box);    // nothing below to jump to: never shown
   }
 
   function footer(m) {
@@ -467,6 +419,16 @@
     return h('div', { class: 'msg-foot' }, bits);
   }
 
+  // Replace keep's siblings with fresh's siblings, in order, leaving keep where it is.
+  function swapAround(keep, fresh) {
+    const parent = keep.parentNode, fparent = fresh.parentNode;
+    for (const c of [...parent.childNodes]) if (c !== keep) c.remove();
+    let before = true;
+    for (const c of [...fparent.childNodes]) {
+      if (c === fresh) { before = false; continue; }
+      if (before) parent.insertBefore(c, keep); else parent.append(c);
+    }
+  }
   let rafPending = new Set();
   function replaceMessage(m) {
     rafPending.add(m.id);
@@ -479,8 +441,22 @@
         const old = $('messages').querySelector(`[data-id="${CSS.escape(id)}"]`);
         if (msg && old) {
           const oldBox = old.querySelector('.think-text');
-          const prevTop = oldBox ? oldBox.scrollTop : null;
+          let prevTop = oldBox ? oldBox.scrollTop : null;
           const el = messageNode(msg);
+          // A live thinking box is kept, not rebuilt: a new element would drop the reader's
+          // scroll mid-gesture, so they could never scroll back down to the latest text.
+          const oldLive = old.querySelector('.think-live'), newLive = el.querySelector('.think-live');
+          if (oldLive && newLive) {
+            // swap everything around it, so the box itself never leaves the page (moving it resets its scroll)
+            const box = oldLive.querySelector('.think-text');
+            const shown = box.textContent;
+            if (msg.reasoning.startsWith(shown)) { if (msg.reasoning.length > shown.length) box.append(msg.reasoning.slice(shown.length)); }
+            else box.textContent = msg.reasoning;     // a retract rewrote it
+            swapAround(oldLive, newLive);
+            swapAround(oldLive.closest('.think'), newLive.closest('.think'));
+            placeThinkBox(old, msg, null);
+            continue;
+          }
           old.replaceWith(el);
           placeThinkBox(el, msg, prevTop);
         }
@@ -663,7 +639,8 @@
     }
     const atts = $('attachments');
     atts.hidden = !ui.attachments.length;
-    atts.replaceChildren(...ui.attachments.map((a, i) => h('span', { class: 'att' }, icon('file'), a.name,
+    atts.replaceChildren(...ui.attachments.map((a, i) => h('span', { class: 'att', title: a.name }, icon('file'),
+      h('span', { class: 'att-name', text: a.name }), h('span', { class: 'att-size', text: `(${fileSize(a.size)})` }),
       h('button', { type: 'button', 'aria-label': 'Remove ' + a.name, onclick: () => { ui.attachments.splice(i, 1); renderComposer(); } }, icon('x')))));
   }
 
@@ -808,14 +785,15 @@
   }
 
   // ------------------------------------------------------------------ attachments
-  const MAX_ATTACH = 200 * 1024;
+  const MAX_UPLOAD = 60 * 1024 * 1024;     // all attachments of one message together
   async function addFiles(files) {
     for (const f of files) {
       if (ui.attachments.length >= 5) { banner('Up to 5 files per message.'); break; }
-      if (f.size > MAX_ATTACH) { banner(`${f.name} is larger than 200 KB; attach a smaller text file.`); continue; }
+      const used = ui.attachments.reduce((n, a) => n + a.size, 0);
+      if (used + f.size > MAX_UPLOAD) { banner(`${f.name} (${fileSize(f.size)}) would go over the 60 MB upload limit.`); continue; }
       const text = await f.text();
       if (text.includes('\u0000')) { banner(`${f.name} isn't a text file; only text files can be attached.`); continue; }
-      ui.attachments.push({ name: f.name, text });
+      ui.attachments.push({ name: f.name, text, size: f.size });
     }
     renderComposer();
   }
@@ -1023,7 +1001,8 @@
   const dev = { pipelines: null, errors: [], tools: null, folder: 'perseus/pipelines', loading: false, error: null,
                 pid: store.get('pipeline', null), stage: {}, filter: '' };
   const isDev = () => ui.view === 'pipelines' || ui.view === 'tools';
-  const TOOL_ICONS = { web_search: 'search', fetch_url: 'fetch', calculator: 'calc', current_time: 'clock' };
+  const TOOL_ICONS = { web_search: 'search', fetch_url: 'fetch', calculator: 'calc', current_time: 'clock',
+                       output_file: 'file', run_code: 'code' };
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
   async function loadDev() {
@@ -1055,7 +1034,7 @@
     }
     const n = dev.tools ? dev.tools.length : (ui.server && ui.server.tools ? ui.server.tools.length : null);
     $('nav-tools-count').textContent = n == null ? '' : String(n);
-    $('nav-tools-count').setAttribute('aria-label', n == null ? '' : plural(n, 'tool'));
+    $('nav-tools-count').setAttribute('aria-label', n == null ? '' : plural(n, 'agent function'));
   }
 
   // ---- tooltip: one shared element, on hover (short delay) and on keyboard focus; Escape closes it
@@ -1101,7 +1080,7 @@
     const t = (dev.tools || []).find((x) => x.name === name);
     if (!t) {
       return [h('div', { class: 'tip-head' }, h('span', { class: 'tip-name mono', text: name }), h('span', { class: 'chip warn', text: 'Not installed' })),
-        h('p', { class: 'tip-desc', text: 'No tool with this name is loaded, so this stage would run without it. Add it to perseus/tools/ or remove it from the pipeline.' })];
+        h('p', { class: 'tip-desc', text: 'Not loaded: add it to perseus/tools/ or remove it from the pipeline.' })];
     }
     const out = [h('div', { class: 'tip-head' }, h('span', { class: 'tip-name mono', text: t.name }),
       h('span', { class: 'chip' + (t.web ? '' : ' run'), text: t.web ? 'Web' : 'Local' })),
@@ -1112,9 +1091,7 @@
           h('span', { class: 'mono tip-param', text: p.name }), h('span', { class: 'tip-type', text: p.type + (p.required ? '' : ' · optional') }),
           p.description ? h('span', { class: 'tip-pdesc', text: p.description }) : null))));
     } else out.push(h('div', { class: 'tip-sub', text: 'Takes no arguments' }));
-    const meta = [`Times out after ${t.timeout_s} s`];
-    if (t.used_by.length) meta.push('Used by ' + [...new Set(t.used_by.map((u) => u.role))].join(', '));
-    out.push(h('div', { class: 'tip-meta', text: meta.join(' · ') }));
+    out.push(h('div', { class: 'tip-meta', text: `Times out after ${t.timeout_s} s` }));
     return out;
   }
 
@@ -1272,7 +1249,7 @@
         h('div', { class: 'sd-col' },
           section('Receives', receives),
           section(review ? 'Decides' : 'Hands on', handsOn),
-          section('Tools', tools))),
+          section('Agent Functions', tools))),
       h('details', { class: 'sd-more' }, h('summary', {}, icon('chevron'), 'System prompt this stage gets'), codeBlock(st.system_prompt, 'text')),
       h('details', { class: 'sd-more' }, h('summary', {}, icon('chevron'), 'Opening message it receives'), codeBlock(st.packet, 'text')));
   }
@@ -1282,7 +1259,7 @@
     const tools = dev.tools || [];
     const q = dev.filter.trim().toLowerCase();
     const shown = tools.filter((t) => !q || t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q));
-    const input = h('input', { type: 'search', id: 'tool-filter', class: 'tool-filter', placeholder: 'Filter tools', 'aria-label': 'Filter tools', autocomplete: 'off' });
+    const input = h('input', { type: 'search', id: 'tool-filter', class: 'tool-filter', placeholder: 'Filter', 'aria-label': 'Filter agent functions', autocomplete: 'off' });
     input.value = dev.filter;
     input.addEventListener('input', () => {
       dev.filter = input.value;
@@ -1290,24 +1267,20 @@
       renderDev();
       const again = $('tool-filter'); again.focus(); again.setSelectionRange(at, at);
     });
-    const grid = h('div', { class: 'tool-grid', role: 'list', 'aria-label': 'Available tools' }, shown.map((t) => h('div', { role: 'listitem' },
+    const grid = h('div', { class: 'tool-grid', role: 'list', 'aria-label': 'Agent functions' }, shown.map((t) => h('div', { role: 'listitem' },
       withTip(h('button', { type: 'button', class: 'tool-tile' },
         h('span', { class: 'tool-ico' }, icon(TOOL_ICONS[t.name] || 'tool')),
-        h('span', { class: 'tool-body' }, h('span', { class: 'tool-name mono', text: t.name }),
-          h('span', { class: 'tool-meta' },
-            h('span', { class: 'chip' + (t.web ? '' : ' run'), text: t.web ? 'Web' : 'Local' }),
-            h('span', { text: t.used_by.length ? 'Used in ' + plural(t.used_by.length, 'stage') : 'Not used in a pipeline' })))),
+        h('span', { class: 'tool-name mono', text: t.name }),
+        h('span', { class: 'chip' + (t.web ? '' : ' run'), text: t.web ? 'Web' : 'Local' })),
       () => toolTip(t.name)))));
     return [
       h('div', { class: 'tools-head' },
-        h('p', { class: 'tools-lede' }, `${plural(tools.length, 'tool')} the model can call. Hover over or focus a tool to see what it does and what it takes.`),
+        h('p', { class: 'tools-lede', text: plural(tools.length, 'function') }),
         input),
-      shown.length ? grid : h('div', { class: 'card dev-empty' }, h('p', { class: 'hint', text: tools.length ? `No tools match “${dev.filter}”.` : 'No tools are loaded.' })),
-      h('p', { class: 'hint dev-foot', text: 'Tools are Python files in perseus/tools/. New and changed files load before the next answer.' }),
+      shown.length ? grid : h('div', { class: 'card dev-empty' }, h('p', { class: 'hint', text: tools.length ? `Nothing matches “${dev.filter}”.` : 'None loaded.' })),
     ];
   }
 
-  $('nav-pipelines').addEventListener('click', () => openDev('pipelines'));
   $('nav-tools').addEventListener('click', () => openDev('tools'));
   window.addEventListener('resize', () => { if (tipOwner) hideTip(); });
 
