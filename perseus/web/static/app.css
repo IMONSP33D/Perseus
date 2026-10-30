@@ -221,6 +221,20 @@ textarea::placeholder { color: var(--placeholder); }
 .think-jump:hover { background: var(--track); }
 .think-jump[hidden] { display: none; }
 .waiting { margin: 0; font-size: 14px; color: var(--muted); }
+/* the live status line under a streaming answer: what Perseus is doing, for how long, and whether it went quiet */
+.agent-status { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--muted); }
+.agent-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-height: 22px; }
+.agent-dot { width: 8px; height: 8px; flex: none; border-radius: 999px; background: var(--live); box-shadow: 0 0 0 4px var(--live-halo);
+  animation: pulse 1.2s ease-in-out infinite; }
+.agent-label { font-weight: 600; color: var(--text); }
+.agent-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+.agent-meta { font-size: 13px; font-variant-numeric: tabular-nums; }
+.agent-note { margin: 0; padding: 8px 12px; border-radius: 10px; font-size: 13px; }
+.agent-status.stalled .agent-dot { background: var(--amber); box-shadow: 0 0 0 4px var(--amber-halo); }
+.agent-status.stalled .agent-note { background: var(--warn-bg); color: var(--warn-fg); }
+.agent-status.lost .agent-dot { background: var(--down); box-shadow: 0 0 0 4px var(--down-halo); animation: none; }
+.agent-status.lost .agent-note { background: var(--danger-soft); color: var(--danger-fg); }
 .answer { display: flex; flex-direction: column; gap: 10px; font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
 .answer p { margin: 0; }
 .answer h3 { margin: 6px 0 0; font-size: 17px; font-weight: 600; }

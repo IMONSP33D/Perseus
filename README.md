@@ -202,6 +202,7 @@ The sidebar holds a new chat button, quick toggles (Internet Access, Show Thinki
 | **Thinking: Off / Low / Medium / High / Max** | For models that think. Each level is a thinking budget on top of the answer length: 4K, 16K, 32K tokens, or everything one request can hold. Past it, Perseus wraps up and says so. The thinking panel shows the count live. |
 | **Show Thinking** | Shows or hides the thinking panel (display only). |
 | **Context ring** | Tokens the last answer used out of the current context. |
+| **Status line** | While an answer runs: what Perseus is doing right now (waiting for the model, thinking, which tool and its arguments, writing), how long it has been at it, and the thinking tokens so far. It turns amber when nothing has happened for a minute (two before the first token) and red when the server stops sending its 5-second heartbeat, so a stuck model and a dropped connection look different. |
 | **Close out** | While an answer runs: stop thinking and skip remaining tool calls, then write the final answer from the notes so far. |
 | **Send / Stop** | While an answer runs, the send button stops it and keeps the partial answer. |
 | **Tool feed** | Every call with its status (OK, Blocked, Refused, Error, Cached, Stopped), its reason, and the exact arguments and result. Earlier questions fold into one row each. |

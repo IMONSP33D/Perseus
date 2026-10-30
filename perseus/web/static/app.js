@@ -356,13 +356,10 @@
         meter,
         open ? thinkBox(m) : null));
     }
-    if (!showThink && !m.content && (stillThinking || wrapping)) kids.push(h('p', { class: 'waiting', text: wrapping ? 'Wrapping up…' : 'Thinking…' }));
-    if (phase === 'tools' && !m.content) kids.push(h('p', { class: 'waiting', text: 'Using tools…' }));
     kids.push(h('div', { class: 'answer' }, markdown(m.content, m.streaming && !!m.content)));
     if (m.files && m.files.length) kids.push(fileList(m));
-    // later steps (after a web search) think again below text that is already shown
-    if (m.content && (phase === 'tools' || (!showThink && (stillThinking || wrapping))))
-      kids.push(h('p', { class: 'waiting', text: wrapping ? 'Wrapping up…' : phase === 'tools' ? 'Using tools…' : 'Thinking…' }));
+    // what Perseus is doing right now, every step (later steps think again below text already shown)
+    if (m.streaming) kids.push(statusLine(m));
     if (!m.streaming && !m.content && !m.error && !m.stopped && hasReasoning)
       kids.push(h('p', { class: 'note-warn', text: 'No answer came back; the thinking is above. Ask again, or raise Length or Thinking.' }));
     if (!m.streaming) kids.push(footer(m));
@@ -370,6 +367,108 @@
       h('span', { class: 'avatar' }, h('img', { src: '/assets/mark.png', alt: '' })),
       h('div', { class: 'ai-body' }, kids));
   }
+
+  // ------------------------------------------------------------------ agent status line
+  // While an answer streams, one line under it says what Perseus is doing right now, for how long,
+  // and whether it has gone quiet. Times are kept on this browser's clock: _phaseAt (this phase or
+  // tool began), _seen (the model or a tool last did anything) and _pulse (last word from the server:
+  // any stream event, a heartbeat, or a reload). The server sends a heartbeat every 5 s, so a quiet
+  // model (heartbeats, no activity) and a dead connection (nothing at all) look different.
+  const THINK_VERBS = ['Thinking', 'Pondering', 'Reasoning', 'Mulling it over', 'Working it out',
+    'Considering', 'Connecting the dots', 'Weighing it up'];
+  const STALL_S = 60;           // no activity this long: the model may be stuck
+  const PREFILL_STALL_S = 120;  // before the first token of a step a long prompt can take a while
+  const LOST_S = 20;            // no heartbeat this long: the connection or the server is gone
+  function clockPhase(m, phase, detail, now) {
+    now = now || Date.now();
+    if (!m._phaseAt || m._phaseKey !== phase + '|' + (detail || '')) {
+      m._phaseKey = phase + '|' + (detail || '');
+      m._phaseAt = now;
+      m._stepText = false;
+      if (phase === 'thinking') m._verb = THINK_VERBS[Math.floor(Math.random() * THINK_VERBS.length)];
+    }
+  }
+  function clockSeen(m, now) { m._seen = m._pulse = now || Date.now(); }
+  // A message loaded from the server (a reload, or reopening the page mid-answer): read its
+  // timestamps on our own clock. serverNow is the server's time when it sent them.
+  function clockFromServer(m, serverNow) {
+    if (!m.streaming || !serverNow) return;
+    const skew = Date.now() - serverNow * 1000;
+    const phase = m.phase || 'thinking';
+    m._phaseKey = phase + '|' + (m.detail || '');
+    m._phaseAt = (m.phase_at || m.started) * 1000 + skew;
+    m._seen = (m.activity_at || m.started) * 1000 + skew;
+    m._pulse = Date.now();
+    m._stepText = (m.activity_at || 0) > (m.phase_at || 0) + 0.05;
+    if (!m._verb) m._verb = THINK_VERBS[0];
+  }
+  const wholeSecs = (ms) => Math.max(0, Math.floor(ms / 1000));
+  function clockLabel(s) { return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; }
+
+  // What the line says: { tone: 'live' | 'stalled' | 'lost', label, detail, meta, note }
+  function agentStatus(m) {
+    const now = Date.now();
+    const phase = m.phase || (m.content ? 'answering' : 'thinking');
+    const inPhase = wholeSecs(now - (m._phaseAt || now));
+    const idle = wholeSecs(now - (m._seen || now));
+    const silent = wholeSecs(now - (m._pulse || now));
+    let label, detail = null, meta = clockLabel(inPhase), limit = STALL_S;
+    if (phase === 'tools') {
+      label = 'Running a tool';
+      detail = m.detail || null;
+      if (m.limit_s) { meta += ` / ${clockLabel(Math.round(m.limit_s))} limit`; limit = Math.max(STALL_S, m.limit_s + 15); }
+    } else if (phase === 'closing') {
+      label = m.content ? 'Writing the final answer' : 'Wrapping up';
+    } else if (phase === 'answering') {
+      label = 'Writing the answer';
+    } else if (!m._stepText) {
+      label = 'Waiting for the model';
+      detail = 'reading the conversation so far';
+      limit = PREFILL_STALL_S;
+    } else {
+      label = m._verb || 'Thinking';
+      if (m.think_used) meta += ` · ${tokensLabel(m.think_used)} tokens`;
+    }
+    let tone = 'live', note = null;
+    if (silent >= LOST_S) {
+      tone = 'lost';
+      note = `No word from Perseus for ${clockLabel(silent)}. The connection or the server may be down; reload the page to check.`;
+    } else if (idle >= limit) {
+      tone = 'stalled';
+      note = `Nothing new for ${clockLabel(idle)}. The ${phase === 'tools' ? 'tool' : 'model'} may be stuck; Stop or Close out ends this answer.`;
+    }
+    return { tone, label, detail, meta, note };
+  }
+
+  function statusLine(m) {
+    const st = agentStatus(m);
+    return h('div', { class: 'agent-status ' + st.tone, 'data-status': m.id },
+      h('div', { class: 'agent-status-row' },
+        h('span', { class: 'agent-dot', 'aria-hidden': 'true' }),
+        h('span', { class: 'agent-label', role: 'status', text: st.label + '…' }),
+        h('span', { class: 'agent-detail', text: st.detail || '', hidden: !st.detail }),
+        h('span', { class: 'agent-meta', 'aria-hidden': 'true', text: st.meta })),
+      h('p', { class: 'agent-note', role: 'alert', text: st.note || '', hidden: !st.note }));
+  }
+
+  // Once a second, refresh every visible status line in place (no re-render, so nothing flickers).
+  function tickStatus() {
+    const c = active();
+    if (!c) return;
+    for (const m of c.messages) {
+      if (!m.streaming) continue;
+      const el = $('messages').querySelector(`[data-status="${CSS.escape(m.id)}"]`);
+      if (!el) continue;
+      const st = agentStatus(m);
+      el.className = 'agent-status ' + st.tone;
+      const set = (sel, text) => { const n = el.querySelector(sel); if (n.textContent !== text) n.textContent = text; n.hidden = !text; };
+      set('.agent-label', st.label + '…');
+      set('.agent-detail', st.detail || '');
+      set('.agent-meta', st.meta);
+      set('.agent-note', st.note || '');
+    }
+  }
+  setInterval(tickStatus, 1000);
 
   // The thinking box follows new text while it streams, unless the reader has scrolled up in it;
   // scrolling back to the bottom (or "Jump to latest") follows again. Only the reader's own input
@@ -769,8 +868,16 @@
           if (!line) continue;
           let ev;
           try { ev = JSON.parse(line.slice(5)); } catch (e) { continue; }
-          if (ev.type === 'start') {
+          if (current && ev.type !== 'start' && ev.type !== 'done') {
+            if (ev.type === 'heartbeat') current._pulse = Date.now();
+            else clockSeen(current);
+          }
+          if (ev.type === 'heartbeat') {
+            continue;      // the ticker shows it: nothing to re-render
+          } else if (ev.type === 'start') {
             current = ev.message;
+            clockPhase(current, 'thinking', null);
+            clockSeen(current);
             chat.messages.push(ev.user, current);
             chat.title = ev.chat.title;
             const row = ui.list.find((x) => x.id === chat.id);
@@ -779,7 +886,9 @@
             if (chat.id === ui.activeId) { renderMessages(); renderHeader(); renderFeed(); scrollToBottom(); }
             renderChatList();
           } else if (ev.type === 'text' && current) {
-            if (current.phase !== 'closing') current.phase = ev.thought ? 'thinking' : 'answering';
+            if (current.phase !== 'closing') { current.phase = ev.thought ? 'thinking' : 'answering'; current.detail = null; }
+            clockPhase(current, current.phase, current.detail);
+            current._stepText = true;
             if (ev.thought) { current.reasoning += ev.text; if (ev.think_used != null) current.think_used = ev.think_used; }
             else {
               if (!current.content && current.reasoning && current.think_secs == null) current.think_secs = (Date.now() / 1000) - current.started;
@@ -792,10 +901,15 @@
             if (!current.content) current.think_secs = null;
             current.reasoning += ev.text;
             if (ev.think_used != null) current.think_used = ev.think_used;
-            if (current.phase !== 'closing') current.phase = 'thinking';
+            if (current.phase !== 'closing') { current.phase = 'thinking'; current.detail = null; }
+            clockPhase(current, current.phase, current.detail);
+            current._stepText = true;
             if (chat.id === ui.activeId) replaceMessage(current);
           } else if (ev.type === 'phase' && current) {
             current.phase = ev.phase;
+            current.detail = ev.detail || null;
+            current.limit_s = ev.limit_s || null;
+            clockPhase(current, current.phase, current.detail);
             if (chat.id === ui.activeId) replaceMessage(current);
           } else if (ev.type === 'file' && current) {
             current.files = current.files || [];
@@ -835,6 +949,7 @@
       full.ctxUsed = keep ? keep.ctxUsed : 0;
       const lastAi = [...full.messages].reverse().find((m) => m.role === 'assistant' && m.usage && m.usage.prompt_tokens);
       if (lastAi) full.ctxUsed = (lastAi.usage.prompt_tokens || 0) + (lastAi.usage.completion_tokens || 0);
+      for (const m of full.messages) clockFromServer(m, full.now);
       ui.chats[id] = full;
       if (id === ui.activeId) renderAll();
       if (full.busy && !ui.streams[id]) setTimeout(() => reloadChat(id), 1500);

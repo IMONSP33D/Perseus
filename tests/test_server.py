@@ -214,6 +214,32 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(full["feed"]), 1)
         self.assertEqual(full["messages"][1]["tool_ids"], [tools[-1]["id"]])
 
+    def test_heartbeats_while_the_model_is_quiet(self):
+        import perseus.web.dashboard as dashboard
+        old, dashboard.HEARTBEAT_S = dashboard.HEARTBEAT_S, 0.2
+        try:
+            _, chat = self.c.req("POST", "/api/chats", {})
+            _, events = self.c.stream(chat["id"], "slow please")      # ~4 s with nothing streamed
+        finally:
+            dashboard.HEARTBEAT_S = old
+        beats = [e for e in events if e["type"] == "heartbeat"]
+        self.assertGreaterEqual(len(beats), 5)
+        self.assertGreater(max(b["idle_s"] for b in beats), 1)       # the model went quiet: idle time grows
+        self.assertEqual(events[-1]["type"], "done")                 # never a heartbeat after done
+        self.assertIsNone(events[-1]["message"]["phase"])
+
+    def test_status_line_knows_which_tool_is_running(self):
+        _, chat = self.c.req("POST", "/api/chats", {})
+        _, events = self.c.stream(chat["id"], "do math")
+        tools = [e for e in events if e["type"] == "phase" and e["phase"] == "tools" and e.get("detail")]
+        self.assertTrue(tools)
+        self.assertTrue(tools[-1]["detail"].startswith("calc"))
+        self.assertIsInstance(tools[-1]["limit_s"], (int, float))
+        start = events[0]["message"]
+        self.assertLessEqual(start["phase_at"], start["activity_at"])
+        _, full = self.c.req("GET", f"/api/chats/{chat['id']}")
+        self.assertIsInstance(full["now"], float)                    # the dashboard reads timestamps on its own clock
+
     def test_stop_and_busy(self):
         _, chat = self.c.req("POST", "/api/chats", {})
         out = {}

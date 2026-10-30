@@ -41,6 +41,7 @@ THINK_BUDGET = {"off": 0, "low": 4096, "medium": 16384, "high": 32768, "max": No
 CONTEXT_STEPS = (("8k", 8192), ("32k", 32768), ("128k", 131072))
 MAX_PROMPT_CHARS = 8000
 MAX_MESSAGE_CHARS = 64_000_000       # the typed text plus up to 60 MB of attached files
+HEARTBEAT_S = 5                      # while an answer runs, the stream gets a heartbeat this often
 
 
 class BadRequest(Exception):
@@ -86,7 +87,9 @@ class Chat:
                 "messages": len(self.messages)}
 
     def full(self) -> dict:
-        return {**self.summary(), "messages": self.messages, "feed": [event_dict(e) for e in self.feed.events]}
+        # "now" lets the dashboard read phase_at / activity_at on its own clock, whatever the skew
+        return {**self.summary(), "messages": self.messages, "feed": [event_dict(e) for e in self.feed.events],
+                "now": time.time()}
 
 
 def event_dict(ev: ToolEvent) -> dict:
@@ -333,6 +336,8 @@ class Dashboard:
                "started": now, "think_secs": None, "tool_ids": [], "lookups": 0,
                "limit": opts.lookup_limit, "usage": {}, "stopped": False, "error": None,
                "phase": "thinking", "closed": None, "truncated": False,
+               # the status line: when this phase began, when anything last happened, what it's doing
+               "phase_at": now, "activity_at": now, "detail": None, "limit_s": None,
                "turn": chat.engine._turn + 1,     # run_turn numbers this answer next; the feed groups by it
                "think_used": 0, "think_budget": opts.think_tokens, "files": []}
         if not chat.messages:
@@ -340,10 +345,26 @@ class Dashboard:
         chat.messages += [user_msg, msg]
         q.put({"type": "start", "chat": chat.summary(), "user": user_msg, "message": msg})
 
+        def touch():
+            msg["activity_at"] = time.time()
+
+        def set_phase(phase: str, detail: str | None = None, limit_s: float | None = None) -> bool:
+            """Record the phase; True when it (or what it's working on) changed. Once wrapping up, it stays that way."""
+            if msg["phase"] == "closing" and phase != "closing":
+                return False
+            changed = (phase, detail) != (msg["phase"], msg["detail"])
+            if changed:
+                msg["phase_at"] = time.time()
+            msg.update(phase=phase, detail=detail, limit_s=limit_s)
+            return changed
+
+        def put_phase():
+            q.put({"type": "phase", "phase": msg["phase"], "detail": msg["detail"], "limit_s": msg["limit_s"]})
+
         def on_phase(phase: str):
-            if msg["phase"] != "closing" or phase == "closing":   # once wrapping up, it stays that way
-                msg["phase"] = phase
-                q.put({"type": "phase", "phase": msg["phase"]})
+            touch()
+            set_phase(phase)
+            put_phase()
 
         def on_text(piece: str, thought):
             if thought == RETRACT:
@@ -353,13 +374,13 @@ class Dashboard:
                 if not msg["content"]:
                     msg["think_secs"] = None       # the answer hadn't really started
                 msg["reasoning"] += piece
-                if msg["phase"] != "closing":
-                    msg["phase"] = "thinking"
+                touch()
+                set_phase("thinking")
                 msg["think_used"] = chat.engine.thought_tokens
                 q.put({"type": "retract", "text": piece, "think_used": msg["think_used"]})
                 return
-            if msg["phase"] != "closing":
-                msg["phase"] = "thinking" if thought else "answering"
+            touch()
+            set_phase("thinking" if thought else "answering")
             ev = {"type": "text", "text": piece, "thought": thought}
             if thought:
                 msg["reasoning"] += piece
@@ -371,6 +392,12 @@ class Dashboard:
             q.put(ev)
 
         def on_event(ev: ToolEvent):
+            touch()
+            if ev.status == "running":
+                tool = chat.engine.registry.get(ev.tool)
+                if set_phase("tools", f"{ev.tool} · {ev.summary}" if ev.summary else ev.tool,
+                             getattr(tool, "timeout_s", None)):
+                    put_phase()
             if ev.status != "running" and ev.id not in msg["tool_ids"]:
                 msg["tool_ids"].append(ev.id)
             q.put({"type": "tool", "event": event_dict(ev)})
@@ -380,6 +407,24 @@ class Dashboard:
                 q.put({"type": "file", "file": card})
 
         unsubscribe = chat.feed.subscribe(on_event)
+        finished = threading.Event()
+        ending = threading.Lock()          # no heartbeat after "done": done is always the last event
+
+        def pulse():
+            """A heartbeat while the answer runs, so the dashboard can tell a quiet model from a dead
+            connection. idle_s: seconds since the model or a tool last did anything."""
+            while not finished.wait(HEARTBEAT_S):
+                with ending:
+                    if finished.is_set():
+                        break
+                    t = time.time()
+                    q.put({"type": "heartbeat", "idle_s": round(t - msg["activity_at"], 1),
+                           "phase_s": round(t - msg["phase_at"], 1)})
+
+        def end(event: dict):
+            with ending:
+                finished.set()
+                q.put(event)
 
         def work():
             try:
@@ -389,21 +434,23 @@ class Dashboard:
                 chat.recorder.turn(text, res)
                 msg.update(content=res.answer if not msg["content"] else msg["content"],
                            streaming=False, lookups=res.lookups_used, usage=res.usage, stopped=res.stopped,
-                           error=res.error, ttft=res.first_token_s, phase=None, closed=res.closed,
+                           error=res.error, ttft=res.first_token_s, phase=None, detail=None, closed=res.closed,
                            truncated=res.truncated,
                            duration=round(time.time() - msg["started"], 1))
                 if msg["reasoning"] and msg["think_secs"] is None:
                     msg["think_secs"] = msg["duration"]
-                q.put({"type": "done", "message": msg, "context_used": context_used(res.usage)})
+                end({"type": "done", "message": msg, "context_used": context_used(res.usage)})
             except Exception as e:  # never leave the client hanging
-                msg.update(streaming=False, error=f"{type(e).__name__}: {e}")
-                q.put({"type": "done", "message": msg})
+                msg.update(streaming=False, phase=None, detail=None, error=f"{type(e).__name__}: {e}")
+                end({"type": "done", "message": msg})
             finally:
+                finished.set()
                 unsubscribe()
                 chat.busy = False
                 q.put(None)
 
         threading.Thread(target=work, daemon=True, name=f"turn-{cid}").start()
+        threading.Thread(target=pulse, daemon=True, name=f"pulse-{cid}").start()
         return q
 
     def stop(self, cid: str) -> None:
