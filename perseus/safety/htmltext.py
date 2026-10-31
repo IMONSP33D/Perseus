@@ -6,8 +6,9 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
-SKIP = {"script", "style", "noscript", "template", "svg", "canvas", "iframe", "object", "head", "form", "button",
+SKIP = {"script", "style", "noscript", "template", "svg", "canvas", "iframe", "object", "button",
         "select", "nav", "footer"}
+HEAD_ONLY = {"head", "title", "meta", "link", "base", "style", "script", "noscript"}
 BLOCK = {"p", "div", "br", "li", "ul", "ol", "tr", "table", "section", "article", "header", "main", "aside",
          "h1", "h2", "h3", "h4", "h5", "h6", "pre", "blockquote", "dd", "dt", "figcaption", "hr"}
 VOID = {"br", "hr", "img", "input", "meta", "link", "area", "base", "col", "embed", "source", "track", "wbr"}
@@ -21,16 +22,23 @@ class _Extractor(HTMLParser):
         self.title: list[str] = []
         self.links: list[tuple[str, str]] = []
         self._skip = 0
+        self._in_head = False
         self._in_title = False
+        self._title_done = False
         self._href: str | None = None
         self._anchor: list[str] = []
 
     def handle_starttag(self, tag, attrs):
+        if tag == "head":
+            self._in_head = True
+            return
+        if self._in_head and tag not in HEAD_ONLY:
+            self._in_head = False
         if tag == "title":
-            self._in_title = True
+            self._in_title = not self._skip and not self._title_done
         elif tag in SKIP and tag not in VOID:
             self._skip += 1
-        if self._skip:
+        if self._skip or self._in_head:
             return
         if tag in BLOCK:
             self.parts.append("\n")
@@ -44,7 +52,10 @@ class _Extractor(HTMLParser):
                 self._href, self._anchor = urljoin(self.base, href), []
 
     def handle_endtag(self, tag):
-        if tag == "title":
+        if tag == "head":
+            self._in_head = False
+        elif tag == "title":
+            self._title_done = self._title_done or self._in_title
             self._in_title = False
         elif tag in SKIP and tag not in VOID and self._skip:
             self._skip -= 1
@@ -59,7 +70,7 @@ class _Extractor(HTMLParser):
         if self._in_title:
             self.title.append(data)
             return
-        if self._skip:
+        if self._skip or self._in_head:
             return
         self.parts.append(data)
         if self._href is not None:

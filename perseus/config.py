@@ -512,8 +512,9 @@ class Paths:
 
 
 def default_config_path() -> Path:
-    """Both entry points read ./Config/ from the directory they run in."""
-    return Path.cwd() / CONFIG_DIR
+    """./Config/ when the current folder has one, else the checkout's Config/ (where configuration.sh writes)."""
+    here = Path.cwd() / CONFIG_DIR
+    return here if here.is_dir() else Path(__file__).resolve().parent.parent / CONFIG_DIR
 
 
 def pointer_path(config_path: Path) -> Path:

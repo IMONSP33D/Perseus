@@ -145,6 +145,11 @@ class MultiGPU(unittest.TestCase):
         with self.assertRaises(SizingError):
             resolve(box(2, **H100), llama33_70b(), cfg(max_context=131072))  # KV doesn't hold it
 
+    def test_a_fixed_context_picks_the_tp_that_holds_it(self):
+        self.assertEqual(resolve(box(2, **RTX4090), llama31_8b(), cfg()).tensor_parallel, 1)
+        r = resolve(box(2, **RTX4090), llama31_8b(), cfg(max_context=98304))
+        self.assertEqual((r.tensor_parallel, r.max_context), (2, 98304))
+
     def test_quantization_conflicts(self):
         with self.assertRaises(SizingError):
             resolve(box(1, **RTX4090), qwen25_32b_awq(), cfg(quantization="bf16"))

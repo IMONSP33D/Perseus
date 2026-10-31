@@ -34,7 +34,7 @@ class SandboxClient:
         self.network = "none"
 
     def _call(self, method: str, path: str, body: dict | None = None, timeout: float = 10.0) -> tuple[int, dict]:
-        data = json.dumps(body).encode() if body is not None else None
+        data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
         req = urllib.request.Request(self.base + path, data=data, method=method,
                                      headers={"Authorization": f"Bearer {self.token}",
                                               "Content-Type": "application/json"})
@@ -75,6 +75,8 @@ class SandboxClient:
             return data
         err = data.get("error") or {}
         code_ = err.get("code", "backend")
+        if status == 413:
+            raise ToolFailure("the program and its input are too large for the sandbox; send less")
         if status == 400:   # the request itself was wrong (e.g. a language that isn't installed): say exactly why
             raise ToolFailure(err.get("message") or MESSAGES["config"])
         raise ToolFailure(MESSAGES.get(code_, MESSAGES["backend"]))

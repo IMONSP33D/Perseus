@@ -1,8 +1,8 @@
 # The code runner's sandbox image: every toolchain in perseus/sandbox/languages.py.
 #
 # Build it once into an E2B template (needs only your E2B key, no Docker):
-#   uv run python -m setup.sandbox.build_template      (uses [secrets] code_runner_api_key from perseus.toml)
-# then set [code_runner] e2b_template = "perseus-code" in perseus.toml.
+#   ~/.local/bin/uv run python -m setup.sandbox.build_template   (uses [code_runner] api_key from Config/tooling.toml)
+# then set [code_runner] e2b_template = "perseus-code" in Config/tooling.toml.
 #
 # Languages whose toolchain is missing are simply not offered (the broker probes at start-up),
 # so a smaller image works too. E2B templates must be Debian-based.

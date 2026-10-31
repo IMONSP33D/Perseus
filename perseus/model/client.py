@@ -85,6 +85,10 @@ class LLMClient:
                 if data == "[DONE]":
                     break
                 chunk = json.loads(data)
+                err = chunk.get("error") or (chunk if chunk.get("object") == "error" else None)
+                if err:
+                    msg = err.get("message") if isinstance(err, dict) else str(err)
+                    raise LLMError(f"vLLM stream error: {str(msg)[:300]}")
                 if chunk.get("usage"):
                     reply.usage = chunk["usage"]
                 for choice in chunk.get("choices") or []:

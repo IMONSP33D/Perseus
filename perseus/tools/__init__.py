@@ -1,21 +1,34 @@
 """Tool registry: the only Perseus API a tool imports.
 
 Each built-in tool is one file in this folder. A tool is a plain Python
-function with a JSON Schema, registered with @tool:
+function registered with @tool; its docstring is the description and its
+type hints are the schema:
 
-    from perseus.tools import ToolFailure, tool
+    from perseus.tools import tool
 
-    @tool(description="Add two numbers.",
-          parameters={"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}},
-                      "required": ["a", "b"]})
-    def add(ctx, a, b):
+    @tool
+    def add(a: float, b: float) -> dict:
+        "Add two numbers."
         return {"sum": a + b}
 
-Rules every tool follows (the loader and tests/test_tool_imports.py enforce the first two):
+Pass `parameters=` (a JSON Schema) instead when you need limits such as
+maxLength or pattern, and take `ctx` as the first parameter to use the gateway,
+search or sandbox.
+
+Rules every tool follows (the loader and tests/test_tool_imports.py check the first one;
+the socket guard is the wall behind it):
   * no network or process libraries: web access only through `ctx.gateway`,
     search only through `ctx.search`, code execution only through `ctx.sandbox`
   * no file writes; return data, don't act
-  * return a dict or a string; raise ToolFailure with a message for the model
+  * return a dict, list or string; raise ToolFailure with a message for the model
+    (other exceptions reach the model only as their type name)
+
+Reserved keys in a returned dict:
+  text     the main body; capped to the context budget
+  url      the source, named in the untrusted-content label
+  status   an int is shown as the HTTP status in the feed
+  feed     a card view for the tool feed (see engine.feed.clean_feed); never sent to the model
+  file     a file handed to the user (see engine.feed.clean_file); never sent to the model
 
 A tool that needs an engine-provided capability says so with `requires=` (for
 example `requires="sandbox"`). It is offered to the model, listed in the
@@ -29,6 +42,11 @@ perseus.engine.tool_loader; files starting with "_" are skipped (see _example.py
 from __future__ import annotations
 
 import copy
+import functools
+import inspect
+import threading
+import types
+import typing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -86,17 +104,23 @@ class Registry:
     def __init__(self):
         self._tools: dict[str, Tool] = {}
         self._caps: dict[str, Capability] = {}
+        self.lock = threading.RLock()
 
     def add(self, t: Tool) -> Tool:
         check_schema(t.parameters)
         if not t.name.replace("_", "").isalnum():
             raise ValueError(f"tool name {t.name!r}: letters, digits and underscores only")
-        self._tools[t.name] = t
+        with self.lock:
+            clash = self._tools.get(t.name)
+            if clash is not None and clash.source != t.source:
+                raise ValueError(f"tool name {t.name!r} is already defined in {clash.source}")
+            self._tools[t.name] = t
         return t
 
     def remove_source(self, source: str) -> None:
-        for name in [n for n, t in self._tools.items() if t.source == source]:
-            del self._tools[name]
+        with self.lock:
+            for name in [n for n, t in self._tools.items() if t.source == source]:
+                del self._tools[name]
 
     # capabilities ------------------------------------------------------------
     def provide(self, name: str, *, reaches_web: bool = False, enums: dict[str, list[str]] | None = None,
@@ -134,11 +158,13 @@ class Registry:
 
     def names(self) -> list[str]:
         """Tools usable right now (their capability, if any, is provided)."""
-        return sorted(n for n, t in self._tools.items() if self.available(t))
+        with self.lock:
+            return sorted(n for n, t in self._tools.items() if self.available(t))
 
     def all_names(self) -> list[str]:
         """Every loaded tool, usable or not (import checks, the dev view)."""
-        return sorted(self._tools)
+        with self.lock:
+            return sorted(self._tools)
 
     def loaded(self, name: str) -> Tool | None:
         return self._tools.get(name)
@@ -149,7 +175,9 @@ class Registry:
 
     def specs(self, only: set[str] | None = None) -> list[dict]:
         out = []
-        for n, t in sorted(self._tools.items()):
+        with self.lock:
+            tools = sorted(self._tools.items())
+        for n, t in tools:
             if self.available(t) and (only is None or n in only):
                 spec = t.spec(self.parameters(t))
                 spec["function"]["description"] = self.description(t)
@@ -171,14 +199,104 @@ class Registry:
 
 REGISTRY = Registry()
 
+_JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean", dict: "object", list: "array"}
 
-def tool(name: str | None = None, *, description: str, parameters: dict, lookup: bool = False,
-         timeout_s: float = 30.0, registry: Registry | None = None, requires: str | None = None,
-         untrusted: bool | None = None):
+
+def _json_type(hint: Any) -> dict:
+    meta = ""
+    if typing.get_origin(hint) is typing.Annotated:
+        hint, *extra = typing.get_args(hint)
+        meta = next((e for e in extra if isinstance(e, str)), "")
+    origin, args = typing.get_origin(hint), typing.get_args(hint)
+    if origin in (typing.Union, types.UnionType):
+        real = [a for a in args if a is not type(None)]
+        out = _json_type(real[0]) if len(real) == 1 else {}
+        if len(real) < len(args) and isinstance(out.get("type"), str):
+            out["type"] = [out["type"], "null"]
+    elif origin is typing.Literal:
+        out = {"enum": list(args)}
+        kinds = {_JSON_TYPES.get(type(a)) for a in args}
+        if len(kinds) == 1 and None not in kinds:
+            out["type"] = kinds.pop()
+    elif origin is list:
+        out = {"type": "array"}
+        if args:
+            out["items"] = _json_type(args[0])
+    elif origin is dict:
+        out = {"type": "object"}
+    elif hint in _JSON_TYPES:
+        out = {"type": _JSON_TYPES[hint]}
+    elif hint is inspect.Parameter.empty or hint is Any:
+        out = {}
+    else:
+        raise TypeError(f"type hint {hint!r} has no JSON Schema equivalent; pass parameters= instead")
+    if meta:
+        out["description"] = meta
+    return out
+
+
+def schema_from_signature(fn: Callable) -> dict:
+    """A parameters schema from the function's type hints; `Annotated[str, "help"]` adds a description."""
+    hints = typing.get_type_hints(fn, include_extras=True)
+    props, required = {}, []
+    for i, (pname, p) in enumerate(inspect.signature(fn).parameters.items()):
+        if i == 0 and pname == "ctx":
+            continue
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+            raise TypeError(f"{fn.__name__}: *args/**kwargs can't be offered to a model; name each argument")
+        prop = _json_type(hints.get(pname, p.annotation))
+        if p.default is p.empty:
+            required.append(pname)
+        elif p.default is not None:
+            prop["default"] = p.default
+        props[pname] = prop
+    schema: dict = {"type": "object", "properties": props}
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def _takes_ctx(fn: Callable, parameters: dict | None) -> bool:
+    """A first parameter named `ctx`, or (explicit schema) one that isn't a schema argument, gets the context."""
+    first = next(iter(inspect.signature(fn).parameters), None)
+    if first is None:
+        return False
+    if parameters is not None:
+        return first not in (parameters.get("properties") or {})
+    return first == "ctx"
+
+
+def tool(name: str | Callable | None = None, *, description: str | None = None, parameters: dict | None = None,
+         lookup: bool = False, timeout_s: float = 30.0, registry: Registry | None = None,
+         requires: str | None = None, untrusted: bool | None = None):
+    """Register a function as a tool. All of these work:
+
+        @tool
+        def shout(text: str) -> str:
+            "Upper-case some text."
+            return text.upper()
+
+        @tool(lookup=True)
+        def title(ctx, url: Annotated[str, "Full http(s) URL."]): ...
+
+        @tool(description="...", parameters={...JSON Schema...})
+        def anything(ctx, **schema_args): ...
+
+    The description defaults to the docstring and the schema to the type hints.
+    A first parameter named `ctx` receives the ToolContext; without it the tool gets only its arguments.
+    With an explicit `parameters=`, a first parameter that isn't one of its arguments gets the context.
+    """
     def deco(fn):
-        (registry or REGISTRY).add(Tool(name or fn.__name__, description.strip(), parameters, fn, lookup,
-                                        timeout_s, fn.__module__, requires, untrusted))
+        desc = description or inspect.getdoc(fn)
+        if not desc:
+            raise ValueError(f"tool {fn.__name__!r}: give it a docstring or description=")
+        params = parameters if parameters is not None else schema_from_signature(fn)
+        call = fn if _takes_ctx(fn, parameters) else functools.wraps(fn)(lambda _ctx, **kw: fn(**kw))
+        (registry or REGISTRY).add(Tool(name if isinstance(name, str) else fn.__name__, desc.strip(), params,
+                                        call, lookup, timeout_s, fn.__module__, requires, untrusted))
         return fn
+    if callable(name):
+        return deco(name)
     return deco
 
 

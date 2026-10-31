@@ -40,7 +40,9 @@ class SearchClient:
         except (urllib.error.URLError, OSError, ValueError) as e:
             raise SearchUnavailable(f"search unavailable ({type(e).__name__})")
         results = []
-        for r in data.get("results", [])[:max_results]:
+        for r in data.get("results", []):
+            if len(results) >= max_results:
+                break
             if not str(r.get("url", "")).startswith(("http://", "https://")):
                 continue
             results.append({"title": r.get("title", "")[:200], "url": r["url"],

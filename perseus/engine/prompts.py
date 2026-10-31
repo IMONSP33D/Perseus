@@ -40,6 +40,9 @@ def system_prompt(tool_names: list[str], depth_limit: int, untrusted: bool | Non
     return "\n".join(lines)
 
 
+UNPARSED_RETRY = ("Your last message contained a tool call written as text, and it wasn't run. Call the tool again "
+                  "using the tool-calling format with arguments as one JSON object, or answer without it.")
+
 LIMIT_REACHED = ("You have used all {n} lookups allowed for this answer. Don't call more tools: answer now with "
                  "what you have, and say what you couldn't verify.")
 
@@ -50,6 +53,7 @@ WRAP_UP = {
     "user": "Time's up: the user pressed Close out. Stop researching and stop thinking.",
     "budget": "You've used the thinking budget for this answer. Stop thinking.",
     "length": "You ran out of room while thinking. Stop thinking.",
+    "steps": "You've used every tool step allowed for this answer. Stop calling tools.",
 }
 CLOSE_OUT = ("{why} Give your final answer to the user's last message now, based only on what you have worked out "
              "so far. Don't plan or think it through again: start writing the answer itself straight away, and "

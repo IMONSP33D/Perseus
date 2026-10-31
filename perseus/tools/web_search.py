@@ -18,5 +18,5 @@ from perseus.tools import ToolFailure, tool
       lookup=True, timeout_s=20)
 def web_search(ctx, query: str, max_results: int = 8):
     if ctx.search is None:
-        raise ToolFailure("search unavailable")
+        raise ToolFailure("search unavailable right now; fetch_url still works if you know a URL")
     return ctx.search.search(query, max_results, engines=ctx.engines)

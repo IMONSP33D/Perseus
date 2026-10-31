@@ -385,11 +385,13 @@ def main(argv: list[str] | None = None) -> None:
         else:
             serve_dashboard(r, paths, run, sup, llm, registry, engine.ctx, gateway, depths, loader, rep,
                             args.fast_start, vllm_port)
-        if refused:
-            say(f"  ! socket guard refused {len(refused)} connection(s) outside the gateway: {', '.join(refused[:5])}")
     except KeyboardInterrupt:
         pass
     finally:
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_IGN)      # a second Ctrl-C must not orphan vLLM mid-shutdown
+        if refused:
+            say(f"  ! socket guard refused {len(refused)} connection(s) outside the gateway: {', '.join(refused[:5])}")
         say("  stopping…")
         sup.stop_all()
         run.clear()
@@ -410,11 +412,16 @@ def serve_dashboard(r: dict, paths: Paths, run: RunFiles, sup, llm, registry, ct
             "small_gpu": bool(prof.get("small_gpu")), "tensor_parallel": int(v["tensor_parallel_size"])}
 
     def restart_model(tokens: int) -> None:
+        old_len, old_cmd = r["vllm"]["max_model_len"], list(sup.procs["vLLM"].spec.cmd)
         r["vllm"]["max_model_len"] = tokens
         sup.restart("vLLM", build_vllm_cmd(r, vllm_port, fast_start))
         m = sup.wait_ready("vLLM")
         if m.state != "up":
-            raise RuntimeError(m.reason or "vLLM didn't come back")
+            reason = m.reason or "vLLM didn't come back"
+            r["vllm"]["max_model_len"] = old_len
+            sup.restart("vLLM", old_cmd)
+            sup.wait_ready("vLLM")
+            raise RuntimeError(f"{reason}; went back to {old_len:,} tokens")
 
     def raw_prompt(messages, tools):
         from perseus.model.prompt_view import render_prompt
@@ -428,7 +435,8 @@ def serve_dashboard(r: dict, paths: Paths, run: RunFiles, sup, llm, registry, ct
                        "max_context": int(v["max_model_len"]), "small_gpu": bool(prof.get("small_gpu"))}
     dash = Dashboard(info=info, llm=llm, registry=registry, ctx=ctx, depths=depths, engine_settings=engine_settings,
                      engine_list=list(r["search"]["engines"]), status=status, restart_model=restart_model,
-                     raw_prompt=raw_prompt, refresh_tools=loader.refresh, gateway=gateway)
+                     raw_prompt=raw_prompt, refresh_tools=loader.refresh, gateway=gateway,
+                     tool_errors=lambda: dict(loader.errors))
     dash.update_settings({"depth": r.get("limits", {}).get("research_depth", "standard")})
 
     def health():
@@ -492,10 +500,15 @@ def report_reachability(server, port: int, public: bool) -> None:
 
 
 def _public_ip() -> str:
+    """The box's first non-loopback address (gethostbyname alone gives 127.0.1.1 on Debian/Ubuntu)."""
     try:
-        return socket.gethostbyname(socket.gethostname())
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
     except OSError:
-        return "<this box's IP>"
+        infos = []
+    for *_, addr in infos:
+        if not addr[0].startswith("127."):
+            return addr[0]
+    return "<this box's IP>"
 
 
 def run_replay(path: Path) -> None:

@@ -84,8 +84,13 @@ class Console:
             for change in self.refresh_tools():
                 print(f"  {DIM}tools: {change}{RESET}")
         box: dict = {}
-        t = threading.Thread(target=lambda: box.update(r=self.engine.run_turn(self.history, question, self._on_text)),
-                             daemon=True)
+
+        def run():
+            try:
+                box["r"] = self.engine.run_turn(self.history, question, self._on_text)
+            except Exception as e:
+                box["error"] = e
+        t = threading.Thread(target=run, daemon=True)
         t0 = time.monotonic()
         t.start()
         while t.is_alive():
@@ -95,6 +100,10 @@ class Console:
                 print(f"\n  {YELLOW}stopping after the current step…{RESET}", flush=True)
                 self.engine.stop()
         self._end_thought()
+        if "r" not in box:
+            err = box.get("error")
+            print(f"  {YELLOW}the answer failed: {type(err).__name__}: {err}{RESET}")
+            return ""
         r = box["r"]
         self.history += r.messages
         if self.recorder:

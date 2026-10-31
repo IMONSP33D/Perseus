@@ -10,7 +10,7 @@ Perseus turns a Linux GPU box and an open-weight model into a private assistant 
 
 ![Python 3.11–3.14](https://img.shields.io/badge/python-3.11%E2%80%933.14-2B2D42)
 ![vLLM 0.32](https://img.shields.io/badge/vLLM-0.32.0-2B2D42)
-![Tests](https://img.shields.io/badge/tests-332%20passing-16A34A)
+![Tests](https://img.shields.io/badge/tests-349%20passing-16A34A)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-2B2D42)](LICENSE)
 
 [Install](#installing-perseus) · [Update](#updating-perseus) · [Using it](#using-the-dashboard) · [Agent functions](#agent-functions) · [Code runner](#the-code-runner) · [Settings](#configuration) · [Safety](#how-perseus-keeps-you-safe) · [License](#license)
@@ -272,22 +272,24 @@ These are what the model can do while it answers. Open Agent Functions in the si
 Each function is one Python file in `perseus/tools/`. Copy [`_example.py`](perseus/tools/_example.py), give it a new name and edit it. Perseus picks up new and changed files before the next answer, with no restart needed.
 
 ```python
-from perseus.tools import ToolFailure, tool
+from typing import Annotated
+from perseus.tools import tool
 
-@tool(description="Count the words in a piece of text.",
-      parameters={"type": "object", "properties": {
-          "text": {"type": "string", "maxLength": 100_000, "description": "The text to count."}},
-          "required": ["text"]})
-def word_count(ctx, text: str):
+@tool
+def word_count(text: Annotated[str, "The text to count."]) -> dict:
+    """Count the words in a piece of text."""
     return {"words": len(text.split()), "characters": len(text)}
 ```
 
+The docstring is what the model reads, and the type hints become the argument schema (`str`, `int`, `float`, `bool`, `list[...]`, `Literal[...]` for a fixed set of choices, and `X | None` for optional values). For limits such as `maxLength` or `pattern`, pass a JSON Schema as `parameters=` instead.
+
 The rules:
 
-- Return a dict or a string. Raise `ToolFailure("…")` to give the model a clear error message.
+- Return a dict, list or string. Raise `ToolFailure("…")` to give the model a clear error message. Any other exception reaches the model only as its type name.
 - Don't import network or process libraries (`socket`, `requests`, `subprocess` and so on). Perseus refuses to load a file that does.
-- To read the web, use `ctx.gateway.fetch(url)`. To search, use `ctx.search`. To run code, use `ctx.sandbox`.
-- Set `lookup=True` on anything that reads the web. It then counts towards the research limit, and its results are marked as untrusted.
+- Take `ctx` as the first argument when you need it. To read the web, use `ctx.gateway.fetch(url)`. To search, use `ctx.search`. To run code, use `ctx.sandbox`.
+- Set `lookup=True` on anything that reads the web, for example `@tool(lookup=True)`. It then counts towards the research limit, and its results are marked as untrusted.
+- Every tool needs a unique name. A file that reuses another file's tool name is refused, and the reason appears on the Agent Functions page.
 
 ## The code runner
 
@@ -415,7 +417,7 @@ Before Perseus starts, it runs 21 of these refusal checks and won't start if any
 | Option | What it does |
 | --- | --- |
 | `--check` | Check config, hardware, model access and fit, without installing anything heavy |
-| `--install-driver` | VM only: install the NVIDIA driver, then reboot and run again |
+| `--install-driver` | Ubuntu VM only: install the NVIDIA driver, then reboot and run again |
 | `--skip-download` | Do everything except download the model |
 | `--config DIR` | Use config files from another folder |
 | `--section.key value` | Change one setting for this run only |

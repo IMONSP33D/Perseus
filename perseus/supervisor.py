@@ -67,6 +67,7 @@ class Supervisor:
         self.poll_s = poll_s
         self._stop = threading.Event()
         self._lock = threading.Lock()
+        self._spawning = threading.Lock()       # one terminate/spawn at a time, so no process is orphaned
         self._watchers: dict[str, threading.Thread] = {}
 
     # ---------------------------------------------------------------- lifecycle
@@ -106,12 +107,14 @@ class Supervisor:
         with self._lock:
             m.intentional = True
         try:
-            self._set(m, "restarting")
-            self._terminate(m, timeout_s)
-            if cmd is not None:
-                m.spec.cmd = cmd
-            m.reason, m.hints, m.tail = "", [], ""
-            self._spawn(m, "restarting")
+            with self._spawning:
+                self._set(m, "restarting")
+                self._terminate(m, timeout_s)
+                if cmd is not None:
+                    m.spec.cmd = cmd
+                m.reason, m.hints, m.tail = "", [], ""
+                m.last_cause, m.last_cmd = None, None
+                self._spawn(m, "restarting")
         finally:
             with self._lock:
                 m.intentional = False
@@ -156,6 +159,7 @@ class Supervisor:
             if code is None:
                 if m.state == "restarting" and not m.intentional and self._healthy(m):
                     self._set(m, "up")
+                    m.last_cause, m.last_cmd = None, None
                 continue
             if self._stop.is_set():
                 return
@@ -186,7 +190,10 @@ class Supervisor:
             self._set(m, "restarting")
             if self._stop.wait(delay):
                 return
-            self._spawn(m, "restarting")
+            with self._spawning:
+                if m.intentional or m.proc is not proc:
+                    continue
+                self._spawn(m, "restarting")
 
     def _remedy(self, m: Managed, log_text: str) -> tuple[list[str], str] | None:
         if not m.spec.remedy:

@@ -45,6 +45,11 @@ class _H(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(f"data: {json.dumps({'choices': [{'delta': {'content': t}}]})}\n\n".encode())
             self.wfile.write(b"data: [DONE]\n\n")
             return
+        if req["messages"][-1]["content"] == "midstream":
+            self.wfile.write(f"data: {json.dumps({'choices': [{'delta': {'content': 'Par'}}]})}\n\n".encode())
+            self.wfile.write(b'data: {"error": {"message": "engine died", "code": 500}}\n\n')
+            self.wfile.write(b"data: [DONE]\n\n")
+            return
         chunks = [{"choices": [{"delta": {"reasoning_content": "thinking…"}}]},
                   {"choices": [{"delta": {"content": "Let me "}}]},
                   {"choices": [{"delta": {"content": "check."}}]},
@@ -97,6 +102,11 @@ class Clients(unittest.TestCase):
         self.assertEqual(r.reasoning, "The user wants a sum.double-check")
         self.assertIn(("The user wants a sum.", "retract"), seen)    # it had already been shown as answer
         self.assertEqual(r.message()["content"], "It is 2. Done.")   # history gets the clean answer
+
+    def test_error_mid_stream_is_raised(self):
+        with self.assertRaises(LLMError) as e:
+            LLMClient(self.port, "k", "m").chat([{"role": "user", "content": "midstream"}])
+        self.assertIn("engine died", str(e.exception))
 
     def test_bad_key_is_an_error(self):
         with self.assertRaises(LLMError) as e:

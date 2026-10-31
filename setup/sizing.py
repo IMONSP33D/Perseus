@@ -187,6 +187,8 @@ def resolve(hw: Hardware, meta: ModelMeta, model_cfg: dict) -> Resolution:
         return ("fp8" if on else "auto"), on, why
 
     target_ctx = min(SMALL_GPU_CONTEXT, meta.max_positions)  # "headroom": a useful context
+    if str(model_cfg.get("max_context", "auto")).isdigit():
+        target_ctx = max(target_ctx, min(int(model_cfg["max_context"]), meta.max_positions))
 
     def attempt(offload: float) -> Resolution | None:
         for opt in options:

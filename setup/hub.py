@@ -111,7 +111,7 @@ def inspect(client: HubClient, repo: str, revision: str, trust_remote_code: bool
 
     weights = _weight_files(client, repo, rf)
     config = json.loads(client.read(repo, rf.sha, "config.json"))
-    text = config.get("text_config") or config  # multimodal repos nest the LM config
+    text = {**config, **(config.get("text_config") or {})}  # multimodal repos nest the LM config, often partially
 
     remote = sorted(n for n in names if n.endswith(".py"))
     if config.get("auto_map"):
@@ -130,10 +130,24 @@ def inspect(client: HubClient, repo: str, revision: str, trust_remote_code: bool
         warnings.append("chat template never mentions tools: tool calling may not work with this repo")
 
     quant = _quant_method(config)
-    meta = ModelMeta(
+    try:
+        meta = _meta(repo, rf, config, text, quant, template, sum(rf.sizes[w] for w in weights))
+    except KeyError as e:
+        raise HubError(f"{repo}: config.json lacks {e.args[0]!r}, which sizing needs",
+                       "pick a standard transformers repo, or report the model so its layout can be supported")
+
+    download = {n: rf.sizes[n] for n in names if n in AUX_FILES}
+    download.update({w: rf.sizes[w] for w in weights})
+    download.update({r: rf.sizes[r] for r in remote})
+    return Inspection(meta, download, remote, template, warnings)
+
+
+def _meta(repo: str, rf: RepoFiles, config: dict, text: dict, quant: str | None, template: str,
+          weight_bytes: int) -> ModelMeta:
+    return ModelMeta(
         repo_id=repo,
         revision_sha=rf.sha,
-        weight_bytes=sum(rf.sizes[w] for w in weights),
+        weight_bytes=weight_bytes,
         params_total=rf.params_total,
         native_dtype=_native_dtype(config, rf, quant),
         quant_method=quant,
@@ -148,13 +162,8 @@ def inspect(client: HubClient, repo: str, revision: str, trust_remote_code: bool
         kv_lora_rank=text.get("kv_lora_rank"),
         qk_rope_head_dim=text.get("qk_rope_head_dim"),
         thinks="<think>" in template or "enable_thinking" in template,
-        chat_template_tools=tools_ok,
+        chat_template_tools="tools" in template,
     )
-
-    download = {n: rf.sizes[n] for n in names if n in AUX_FILES}
-    download.update({w: rf.sizes[w] for w in weights})
-    download.update({r: rf.sizes[r] for r in remote})
-    return Inspection(meta, download, remote, template, warnings)
 
 
 def _weight_files(client: HubClient, repo: str, rf: RepoFiles) -> list[str]:

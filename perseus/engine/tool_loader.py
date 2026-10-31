@@ -17,7 +17,8 @@ from perseus.tools import REGISTRY, TOOLS_DIR, Registry
 
 BANNED_IMPORTS = {"socket", "_socket", "ssl", "_ssl", "http", "urllib", "urllib3", "requests", "httpx", "aiohttp",
                   "subprocess", "_posixsubprocess", "asyncio", "multiprocessing", "ctypes", "cffi", "pycurl",
-                  "websocket", "websockets", "ftplib", "smtplib", "telnetlib", "paramiko", "pty", "importlib"}
+                  "websocket", "websockets", "ftplib", "smtplib", "telnetlib", "paramiko", "pty", "importlib",
+                  "builtins"}
 BANNED_OS_CALLS = re.compile(r"^(system|popen|exec\w*|spawn\w*|fork\w*|posix_spawn\w*)$")
 
 
@@ -34,6 +35,10 @@ class ToolLoader:
 
     def refresh(self) -> list[str]:
         """Load new and changed files, drop removed ones. Returns one line per change."""
+        with self.registry.lock:
+            return self._refresh()
+
+    def _refresh(self) -> list[str]:
         changes = []
         files = self.files()
         for p in list(self._mtimes):
@@ -87,6 +92,8 @@ def import_problem(path: Path) -> str | None:
         tree = ast.parse(path.read_text(), filename=str(path))
     except SyntaxError as e:
         return f"syntax error line {e.lineno}"
+    os_names = {"os"} | {a.asname for n in ast.walk(tree) if isinstance(n, ast.Import)
+                         for a in n.names if a.name == "os" and a.asname}
     for node in ast.walk(tree):
         names = []
         if isinstance(node, ast.Import):
@@ -95,7 +102,10 @@ def import_problem(path: Path) -> str | None:
             names = [node.module]
         elif isinstance(node, ast.Call) and getattr(node.func, "id", "") in ("__import__", "exec", "eval", "compile"):
             return f"line {node.lineno}: {node.func.id}() isn't allowed in tools"
-        elif (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "os"
+        elif (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "getattr" and node.args
+              and isinstance(node.args[0], ast.Name) and node.args[0].id in os_names):
+            return f"line {node.lineno}: getattr() on os isn't allowed in tools"
+        elif (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in os_names
               and BANNED_OS_CALLS.match(node.attr)):
             return f"line {node.lineno}: os.{node.attr} runs programs; tools return data, they don't run commands"
         for n in names:

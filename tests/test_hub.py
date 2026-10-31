@@ -84,6 +84,16 @@ class Inspect(unittest.TestCase):
         self.assertEqual((insp.meta.quant_method, insp.meta.native_dtype), ("awq", "int4"))
         self.assertEqual(insp.meta.model_type, "mistral")
 
+    def test_partial_text_config_falls_back_and_missing_keys_are_clear(self):
+        cfg = {"architectures": ["X"], "model_type": "x_vl", "max_position_embeddings": 65536,
+               "text_config": {k: v for k, v in QWEN_CONFIG.items() if k != "max_position_embeddings"}}
+        insp = inspect(qwen_repo(texts={"config.json": cfg}), "x/y", "main", False)
+        self.assertEqual(insp.meta.max_positions, 65536)
+        broken = {k: v for k, v in QWEN_CONFIG.items() if k != "num_hidden_layers"}
+        with self.assertRaises(HubError) as e:
+            inspect(qwen_repo(texts={"config.json": broken}), "x/y", "main", False)
+        self.assertIn("num_hidden_layers", str(e.exception))
+
     def test_compressed_tensors_fp8(self):
         q = {"quant_method": "compressed-tensors",
              "config_groups": {"g0": {"weights": {"num_bits": 8, "type": "float"}}}}

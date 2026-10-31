@@ -123,7 +123,8 @@ class Dashboard:
     def __init__(self, *, info: dict, llm: Any, registry: Any, ctx: Any, depths: dict[str, int],
                  engine_settings: dict, engine_list: list[str], status: Callable[[], dict],
                  restart_model: Callable[[int], None] | None = None, raw_prompt: Callable | None = None,
-                 refresh_tools: Callable[[], list[str]] | None = None, gateway: Any = None):
+                 refresh_tools: Callable[[], list[str]] | None = None, gateway: Any = None,
+                 tool_errors: Callable[[], dict[str, str]] | None = None):
         self.info = info                      # model, hardware, context, capacity, thinks, ...
         self.llm, self.registry, self.ctx = llm, registry, ctx
         self.depths = depths
@@ -132,6 +133,7 @@ class Dashboard:
         self.restart_model = restart_model
         self.raw_prompt = raw_prompt
         self.refresh_tools = refresh_tools
+        self.tool_errors = tool_errors
         self.gateway = gateway
         self.settings = Settings(depth="standard" if "standard" in depths else next(iter(depths)),
                                  engines={e: True for e in engine_list})
@@ -284,7 +286,8 @@ class Dashboard:
                       for k, v in props.items()]
             out.append({"name": name, "description": self.registry.description(t), "params": params, "web": self.registry.is_web(t),
                         "timeout_s": t.timeout_s, "source": t.source, "used_by": used.get(name, [])})
-        return {"tools": out}
+        errors = self.tool_errors() if self.tool_errors else {}
+        return {"tools": out, "errors": [{"file": f, "error": e} for f, e in sorted(errors.items())]}
 
     # ------------------------------------------------------------------ turns
     def turn_options(self) -> TurnOptions:
@@ -334,7 +337,8 @@ class Dashboard:
                "limit": opts.lookup_limit, "usage": {}, "stopped": False, "error": None,
                "phase": "thinking", "closed": None, "truncated": False,
                "turn": chat.engine._turn + 1,     # run_turn numbers this answer next; the feed groups by it
-               "think_used": 0, "think_budget": opts.think_tokens, "files": []}
+               "think_used": 0, "think_budget": opts.think_tokens, "files": [],
+               "ttft": None, "duration": None}     # every key exists up front: readers serialise it mid-turn
         if not chat.messages:
             chat.title = " ".join(text.split())[:48] or "New chat"
         chat.messages += [user_msg, msg]
