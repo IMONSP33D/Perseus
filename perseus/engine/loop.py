@@ -243,8 +243,10 @@ class Engine:
                 return result(_last_text(new), True, step - 1)
             if self._close.is_set():
                 return wrap_up("user", "", step - 1)
+            if step == max_steps:
+                return wrap_up("steps", "", step - 1)
             limit_hit = lookups >= limit
-            tools = self._offered_tools(limit_hit) if step < max_steps else []
+            tools = self._offered_tools(limit_hit)
             if limit_hit and not limit_note_added and self._has_lookup_tools() and new[-1].get("role") == "tool":
                 # Appended to the last tool result: a mid-conversation system
                 # message is rejected by some chat templates.

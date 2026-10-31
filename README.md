@@ -10,7 +10,7 @@ Perseus turns a Linux GPU box and an open-weight model into a private assistant 
 
 ![Python 3.11–3.14](https://img.shields.io/badge/python-3.11%E2%80%933.14-2B2D42)
 ![vLLM 0.32](https://img.shields.io/badge/vLLM-0.32.0-2B2D42)
-![Tests](https://img.shields.io/badge/tests-348%20passing-16A34A)
+![Tests](https://img.shields.io/badge/tests-349%20passing-16A34A)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-2B2D42)](LICENSE)
 
 [Install](#installing-perseus) · [Update](#updating-perseus) · [Using it](#using-the-dashboard) · [Agent functions](#agent-functions) · [Code runner](#the-code-runner) · [Settings](#configuration) · [Safety](#how-perseus-keeps-you-safe) · [License](#license)

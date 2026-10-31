@@ -346,8 +346,11 @@ class Recovery(unittest.TestCase):
     def test_step_limit_wraps_up_instead_of_discarding(self):
         llm = ScriptedLLM(*[[call("spy", {"n": i})] for i in range(20)])
         e, _ = engine(llm, limit=0, extra_steps=2)
+        llm.replies[2:2] = ['<tool_call>{"name": "spy"}</tool_call>']
         r = e.run_turn([], "hi")
         self.assertEqual(llm.seen[2]["tools"], [])
+        self.assertIn("tool step", llm.seen[2]["messages"][-1]["content"])
+        self.assertEqual(r.closed, "steps")
         self.assertIsNone(r.error)
 
     def test_compacted_web_result_stays_labelled_untrusted(self):
