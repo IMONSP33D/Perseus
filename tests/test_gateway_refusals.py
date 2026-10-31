@@ -306,3 +306,18 @@ class RateLimit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HtmlText(unittest.TestCase):
+    def test_common_markup_keeps_its_text(self):
+        from perseus.safety.htmltext import html_to_text
+        self.assertEqual(html_to_text("<head><title>T</title><body><p>no head close</p>")[:2], ("T", "no head close"))
+        self.assertEqual(html_to_text("<form><p>Hello world</p></form>")[1], "Hello world")
+        self.assertEqual(html_to_text("<head><title>T</title></head><svg><title>Icon</title></svg><p>x</p>")[:2],
+                         ("T", "x"))
+
+    def test_calculator_refuses_complex_results(self):
+        from perseus.tools import ToolFailure
+        from perseus.tools.calculator import safe_eval
+        with self.assertRaises(ToolFailure):
+            safe_eval("(-8)**(1/3)")

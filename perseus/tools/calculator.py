@@ -55,17 +55,21 @@ def safe_eval(expr: str):
         raise ToolFailure(f"unsupported element in expression: {type(n).__name__}")
 
     try:
-        return ev(tree)
+        result = ev(tree)
     except ToolFailure:
         raise
     except ZeroDivisionError:
         raise ToolFailure("division by zero")
     except (ValueError, TypeError, OverflowError) as e:
         raise ToolFailure(f"math error: {e}")
+    if isinstance(result, complex):
+        raise ToolFailure("the result isn't a real number (e.g. a negative number to a fractional power)")
+    return result
 
 
 @tool(description="Evaluate an arithmetic expression exactly, e.g. '(3.5 * 2**10) / 7' or 'sqrt(2) * pi'. "
-                  "Supports + - * / // % **, parentheses, sqrt, log, exp, trig, abs, round, floor, ceil, min, max.",
+                  "Supports + - * / // % **, parentheses, pi, e, tau, sqrt, log, log10, log2, exp, trig, abs, round, "
+                  "floor, ceil, min, max, factorial.",
       parameters={"type": "object", "properties": {
           "expression": {"type": "string", "minLength": 1, "maxLength": 300,
                          "description": "The arithmetic expression."}},

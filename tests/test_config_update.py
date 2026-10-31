@@ -138,6 +138,15 @@ class Updates(Base):
         self.edit_mine("tooling.toml", '"e2b_..."', f'"{E2B}"')
         self.edit_mine("settings.toml", "port = 8080", "port = 9090")
 
+    def test_an_untouched_renamed_key_takes_the_new_default(self):
+        for f in (self.dir / "tooling.toml", self.dir / ".base" / "tooling.toml"):
+            text = f.read_text()
+            self.assertIn('network = "packages"', text)
+            f.write_text(text.replace('network = "packages"', "internet = false"))
+        code, out = self.run_update()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.value("tooling.toml", "code_runner", "network"), "packages")
+
     def test_new_keys_and_changed_defaults_arrive_your_values_stay(self):
         self.edit_template("settings.toml", "warn_download_minutes = 20",
                            "warn_download_minutes = 20\nnew_limit = 7           # a brand-new key")

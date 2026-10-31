@@ -104,7 +104,7 @@ def render(r: dict) -> str:
 
 @tool(description="Run a short program in a fresh, isolated Linux sandbox and return its output. "
                   "Use it to test code, check a computation or reproduce an error. Returns the outcome "
-                  "(ok, compile_error, runtime_error or timeout), the exit code, stdout and stderr. "
+                  "(ok, compile_error, runtime_error, timeout or build_timeout), the exit code, stdout and stderr. "
                   "One source file per call, input only via stdin, nothing kept between calls.",
       parameters={"type": "object", "properties": {
           "language": {"type": "string", "enum": names(), "description": "Programming language of the code."},
@@ -113,7 +113,7 @@ def render(r: dict) -> str:
           "stdin": {"type": "string", "maxLength": 100_000, "default": "",
                     "description": "Text given to the program on standard input; empty by default."}},
           "required": ["language", "code"]},
-      requires="sandbox", untrusted=True, timeout_s=330)
+      requires="sandbox", untrusted=True, timeout_s=400)
 def run_code(ctx, language: str, code: str, stdin: str = ""):
     if ctx.sandbox is None:
         raise ToolFailure("the code runner is off")

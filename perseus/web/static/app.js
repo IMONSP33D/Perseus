@@ -465,7 +465,8 @@
     if (m.error) bits.push(h('span', { class: 'err', text: m.error }));
     if (m.stopped) bits.push(h('span', { text: 'Stopped' }));
     const closed = { user: 'Closed out', budget: 'Thinking budget reached · wrapped up',
-      length: 'Ran out of room while thinking · wrapped up' }[m.closed];
+      length: 'Ran out of room while thinking · wrapped up',
+      steps: 'Tool step limit reached · wrapped up' }[m.closed];
     if (closed) bits.push(h('span', { class: 'warn', text: closed }));
     if (m.truncated) bits.push(h('span', { class: 'warn', text: 'Cut off at the length limit · try Length: Long' }));
     if (m.lookups) bits.push(h('span', { text: `${m.lookups} of ${m.limit} lookups` }));
@@ -1055,7 +1056,7 @@
 
   // ------------------------------------------------------------------ development pipelines + tools (WIP)
   // Read-only for now: pipelines are shown, not run. Data comes from /api/pipelines and /api/tools.
-  const dev = { pipelines: null, errors: [], tools: null, folder: 'perseus/pipelines', loading: false, error: null,
+  const dev = { pipelines: null, errors: [], tools: null, toolErrors: [], folder: 'perseus/pipelines', loading: false, error: null,
                 pid: store.get('pipeline', null), stage: {}, filter: '' };
   const isDev = () => ui.view === 'pipelines' || ui.view === 'tools';
   const TOOL_ICONS = { web_search: 'search', fetch_url: 'fetch', calculator: 'calc', current_time: 'clock',
@@ -1068,7 +1069,7 @@
     if (!dev.pipelines) renderDev();
     try {
       const [p, t] = await Promise.all([api('GET', '/api/pipelines'), api('GET', '/api/tools')]);
-      dev.pipelines = p.pipelines; dev.errors = p.errors || []; dev.folder = p.folder || dev.folder; dev.tools = t.tools;
+      dev.pipelines = p.pipelines; dev.errors = p.errors || []; dev.folder = p.folder || dev.folder; dev.tools = t.tools; dev.toolErrors = t.errors || [];
     } catch (e) { dev.error = e.message; }
     dev.loading = false;
     renderDev(); renderNav();
@@ -1330,7 +1331,10 @@
         h('span', { class: 'tool-name mono', text: t.name }),
         h('span', { class: 'chip' + (t.web ? '' : ' run'), text: t.web ? 'Web' : 'Local' })),
       () => toolTip(t.name)))));
+    const problems = dev.toolErrors.map((e) => h('div', { class: 'callout warn', role: 'alert' }, icon('alert'),
+      h('div', {}, h('strong', { class: 'mono', text: e.file }), ' wasn’t loaded: ' + e.error)));
     return [
+      ...problems,
       h('div', { class: 'tools-head' },
         h('p', { class: 'tools-lede', text: plural(tools.length, 'function') }),
         input),

@@ -17,14 +17,17 @@ def fetch_url(ctx, url: str):
         raise ToolFailure("web access unavailable")
     r = ctx.gateway.fetch(url)  # Blocked / GatewayError propagate to the engine, which labels them
     out = {"url": r.url, "status": r.status, "content_type": r.content_type, "title": r.title}
+    notes = []
     if r.binary:
-        out["note"] = f"binary content ({r.content_type}, {r.bytes:,} bytes) not shown"
+        notes.append(f"binary content ({r.content_type}, {r.bytes:,} bytes) not shown")
     else:
         out["text"] = r.text
         if r.links:
             out["links"] = [{"text": t, "url": u} for t, u in r.links[:15]]
     if r.truncated:
-        out["note"] = "page was larger than the response limit and was cut off"
+        notes.append("page was larger than the response limit and was cut off")
+    if notes:
+        out["note"] = "; ".join(notes)
     if r.redirects:
         out["redirected_from"] = url
     return out

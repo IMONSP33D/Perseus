@@ -12,6 +12,7 @@ Security, in order on every request:
 from __future__ import annotations
 
 import hmac
+import sys
 import ipaddress
 import json
 import mimetypes
@@ -42,6 +43,11 @@ LOCKED_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><tit
 <h1>Open the link from the terminal</h1><p>This dashboard needs the access link Perseus printed when it started
 (it ends in <code>?token=…</code>). It is also saved on the box in <code>run/dashboard.url</code> inside
 Perseus's data directory.</p></main></body></html>"""
+
+
+def _same_secret(given: str, secret: str) -> bool:
+    """compare_digest raises TypeError on non-ASCII str; compare bytes instead."""
+    return hmac.compare_digest(given.encode("utf-8", "surrogateescape"), secret.encode())
 
 
 class Server:
@@ -140,14 +146,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _authed(self) -> bool:
         auth = self.headers.get("Authorization", "")
-        if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), self.app.token):
+        if auth.startswith("Bearer ") and _same_secret(auth[7:].strip(), self.app.token):
             return True
         try:
             jar = SimpleCookie(self.headers.get("Cookie", ""))
         except Exception:
             return False
         c = jar.get(COOKIE)
-        return bool(c) and hmac.compare_digest(c.value, self.app.session)
+        return bool(c) and _same_secret(c.value, self.app.session)
 
     def _same_origin_write(self) -> bool:
         if self.headers.get("X-Perseus") != "1":
@@ -229,11 +235,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(404, "not found")
         except (BrokenPipeError, ConnectionResetError):
             pass
+        except Exception as e:
+            sys.stderr.write(f"  ! dashboard: {method} {self.path[:200]} failed: {type(e).__name__}: {e}\n")
+            try:
+                self._error(500, "internal error; the terminal running Perseus has details")
+            except OSError:
+                pass
 
     def _index(self, query: dict):
         token = (query.get("token") or [""])[0]
         if token:
-            if not hmac.compare_digest(token, self.app.token):
+            if not _same_secret(token, self.app.token):
                 self._visit("bad_token")
                 return self._send(401, LOCKED_PAGE.encode(), "text/html; charset=utf-8")
             self._visit("signed_in")
@@ -272,6 +284,8 @@ class _Handler(BaseHTTPRequestHandler):
         if route == ("POST", "model", "apply"):
             body = self._body()
             tokens = body.get("context")
+            if tokens is not None and d.restarting:
+                raise Busy("the model is already restarting")
             threading.Thread(target=self._apply_context, args=(tokens,), daemon=True).start() \
                 if tokens is not None else None
             if tokens is not None:

@@ -25,8 +25,8 @@ from perseus.engine.feed import Feed, ToolEvent, clean_feed, clean_file, summari
 from perseus.model.thinksplit import RETRACT
 from perseus.safety.gateway import GatewayError
 from perseus.safety.netpolicy import Blocked
-from perseus.engine.prompts import (CLOSE_OUT, CLOSE_OUT_CONTINUE, LIMIT_REACHED, UNTRUSTED_CLOSE,
-                                    UNTRUSTED_OPEN, WRAP_UP, system_prompt)
+from perseus.engine.prompts import (CLOSE_OUT, CLOSE_OUT_CONTINUE, LIMIT_REACHED, UNPARSED_RETRY,
+                                    UNTRUSTED_CLOSE, UNTRUSTED_OPEN, WRAP_UP, system_prompt)
 from perseus.search import SearchUnavailable
 from perseus.tools import Registry, ToolContext, ToolFailure
 
@@ -34,10 +34,13 @@ CHARS_PER_TOKEN = 3.5
 NETWORK_CODES = {"dns"}
 DEFAULT_RESULT_TOKENS = 8000
 COMPACT_EXCERPT_CHARS = 500
+DICT_SLACK_CHARS = 2000        # room for a dict result's title, links and notes beside its capped "text"
 WRAP_UP_THINK_TOKENS = 512     # thinking is off for the wrap-up; a template that ignores that gets this much
 NOTES_CHARS = 24_000           # the tail of the thinking passed to the wrap-up request
 
-INJECTION_PATTERNS = [re.compile(p, re.I) for p in (
+UNPARSED_CALL = re.compile(r"<tool_call>|<\|tool_call|<function=|\[TOOL_CALLS\]|<\|python_tag\|>")
+
+INJECTION_PATTERNS = [re.compile(p, re.I | re.M) for p in (
     r"ignore (?:all |any |the )?(?:previous|prior|above|earlier) (?:instructions|prompts|messages)",
     r"disregard (?:all |any |the )?(?:previous|prior|above|your) (?:instructions|rules|guidelines)",
     r"you are now (?:a|an|in) ",
@@ -180,6 +183,7 @@ class Engine:
         reasoning = ""
         max_steps = limit + s.extra_steps + 1
         limit_note_added = False
+        unparsed_retry = False
 
         def wrap_up(why: str, partial: str, step: int):
             """Close out: one more request, no tools and no thinking, to turn the notes into an answer."""
@@ -189,29 +193,30 @@ class Engine:
             note = CLOSE_OUT.format(why=WRAP_UP[why], notes=reasoning[-NOTES_CHARS:].strip() or "(none)")
             if partial.strip():
                 note += CLOSE_OUT_CONTINUE.format(partial=partial[-4000:])
-            msgs = self._fit_context([self.system_message(), *history, *new, {"role": "user", "content": note}])
+            budget = o.answer_tokens or max_tokens
+            msgs = self._fit_context([self.system_message(), *history, *new, {"role": "user", "content": note}],
+                                     keep=len(new) + 1, reserve=budget)
             ex = dict(extra)
             if "chat_template_kwargs" in ex:          # a thinking model: answer straight away
                 ex["chat_template_kwargs"] = {**ex["chat_template_kwargs"], "enable_thinking": False}
             ex.pop("reasoning_effort", None)
-            budget = o.answer_tokens or max_tokens
             wrap_thought = 0
             wrote = False
 
             def wrap_piece(text: str, thought):
                 nonlocal wrap_thought, wrote
                 if thought == RETRACT:
-                    wrap_thought += len(text)
+                    wrap_thought += stream_tokens(text)
                     wrote = False
                 elif thought:
-                    wrap_thought += len(text)
+                    wrap_thought += stream_tokens(text)
                 else:
                     wrote = True
                 if on_text:
                     on_text(text, thought)
 
             def thinking_again() -> bool:
-                return not wrote and wrap_thought / CHARS_PER_TOKEN > WRAP_UP_THINK_TOKENS
+                return not wrote and wrap_thought > WRAP_UP_THINK_TOKENS
 
             def done_yet() -> bool:
                 return self._stop.is_set() or thinking_again()
@@ -239,13 +244,13 @@ class Engine:
             if self._close.is_set():
                 return wrap_up("user", "", step - 1)
             limit_hit = lookups >= limit
-            tools = self._offered_tools(limit_hit)
+            tools = self._offered_tools(limit_hit) if step < max_steps else []
             if limit_hit and not limit_note_added and self._has_lookup_tools() and new[-1].get("role") == "tool":
                 # Appended to the last tool result: a mid-conversation system
                 # message is rejected by some chat templates.
                 new[-1] = {**new[-1], "content": new[-1]["content"] + "\n\n" + LIMIT_REACHED.format(n=limit)}
                 limit_note_added = True
-            messages = self._fit_context([self.system_message(), *history, *new])
+            messages = self._fit_context([self.system_message(), *history, *new], keep=len(new), reserve=max_tokens)
             answering = False
             if on_phase:
                 on_phase("thinking")
@@ -273,9 +278,17 @@ class Engine:
                 if why:
                     return wrap_up(why, reply.content, step)
 
-            new.append(reply.message())
             stopping = reply.finish_reason == "stopped" or self._stop.is_set()
+            new.append(_history_message(reply))
             if not reply.tool_calls:
+                if (not stopping and not unparsed_retry and reply.finish_reason != "length"
+                        and step < max_steps and tools and UNPARSED_CALL.search(reply.content)):
+                    unparsed_retry = True
+                    piece(reply.content, RETRACT)
+                    reasoning += reply.content
+                    new.append({"role": "user", "content": UNPARSED_RETRY})
+                    events.append(self._note_unparsed(turn, reply.content))
+                    continue
                 return result(reply.content, stopping, step,
                               truncated=reply.finish_reason == "length")
             if reply.content.strip():
@@ -303,10 +316,9 @@ class Engine:
                 events.append(ev)
                 new.append(_tool_msg(call, content))
             if stopping:
-                return result(reply.content, True, step)
+                return result(_last_text(new), True, step)
 
-        new.append({"role": "assistant", "content": "(stopped: too many tool steps in one answer)"})
-        return result(_last_text(new), False, max_steps, "step limit reached")
+        return wrap_up("steps", "", max_steps)
 
     # ------------------------------------------------------------------ one call
     def _handle(self, turn: int, call: dict, cache: dict, lookups: int, limit_hit: bool) -> tuple[str, ToolEvent, int]:
@@ -376,7 +388,12 @@ class Engine:
             if status == "ok":
                 cache[key] = content
             return done(ev, status, content, counted, reason="replayed from the recording")
-        content, meta = self._render(tool, result)
+        try:
+            content, meta = self._render(tool, result)
+        except Exception as e:
+            return done(ev, "error", f"Tool error: {name} returned something that can't be shown "
+                                     f"({type(e).__name__})", counted, reason=f"{type(e).__name__}: {e}",
+                        code="crash")
         cache[key] = content
         return done(ev, "ok", content, counted, **meta)
 
@@ -420,11 +437,10 @@ class Engine:
                 if len(text) > cap:
                     result = {**result, "text": text[:cap] + " …",
                               "note": (result.get("note", "") + " text cut to fit the context budget").strip()}
-            body = json.dumps(result, ensure_ascii=False)
-        else:
-            body = str(result)
-            cap = int(self._result_token_cap() * CHARS_PER_TOKEN)
-            body = body[:cap]
+        body = result if isinstance(result, str) else _to_json(result)
+        cap = int(self._result_token_cap() * CHARS_PER_TOKEN) + (DICT_SLACK_CHARS if isinstance(result, dict) else 0)
+        if len(body) > cap:
+            body = body[:cap] + " … (cut to fit the context budget)"
         if tool.untrusted:
             warning = injection_warning(body)
             if warning:
@@ -437,22 +453,33 @@ class Engine:
     def _result_token_cap(self) -> int:
         return self.settings.tool_result_tokens or DEFAULT_RESULT_TOKENS
 
-    def _fit_context(self, messages: list[dict]) -> list[dict]:
+    def _fit_context(self, messages: list[dict], keep: int, reserve: int | None = None) -> list[dict]:
         """Small-GPU compaction, and an overflow guard on every box.
 
         Older tool results shrink to title, URL and a short excerpt for the
-        model; the feed and the export keep the full text.
+        model; if that isn't enough, the oldest whole turns of the chat are left
+        out. The last `keep` messages (the current answer) are never dropped.
+        `reserve` is the request's max_tokens: room left for the reply.
+        The feed and the export keep the full text.
         """
-        budget = self.settings.max_context - (self.settings.max_answer_tokens or 2048) - 512
+        reserve = reserve or self.settings.max_answer_tokens or 2048
+        budget = self.settings.max_context - min(reserve, self.settings.max_context // 2) - 512
         threshold = budget * (0.75 if self.settings.small_gpu else 1.0)
         if estimate_tokens(messages) <= threshold:
             return messages
         out = [dict(m) for m in messages]
         tool_idx = [i for i, m in enumerate(out) if m.get("role") == "tool"]
         for i in tool_idx[:-2] if len(tool_idx) > 2 else tool_idx[:-1]:
-            out[i]["content"] = compact(out[i].get("content") or "")
+            out[i]["content"] = compact_result(out[i].get("content") or "")
             if estimate_tokens(out) <= threshold:
+                return out
+        head = 1 if out and out[0].get("role") == "system" else 0
+        while estimate_tokens(out) > threshold:
+            protected = len(out) - keep
+            nxt = next((i for i in range(head + 1, protected + 1) if out[i].get("role") == "user"), None)
+            if nxt is None:
                 break
+            del out[head:nxt]
         return out
 
     def _offered_tools(self, limit_hit: bool) -> list[dict]:
@@ -466,6 +493,11 @@ class Engine:
             keep.add(n)
         return self.registry.specs(keep)
 
+    def _note_unparsed(self, turn: int, content: str) -> ToolEvent:
+        reason = "the model wrote a tool call as text and the tool-call parser didn't pick it up"
+        ev = self.feed.start(turn, "(unparsed)", content[:2000], content.strip()[:120])
+        return self.feed.finish(ev, "refused", reason=reason, code="unparsed_call", result=UNPARSED_RETRY)
+
     def _has_lookup_tools(self) -> bool:
         return any(self.registry.get(n).lookup for n in self.registry.names())
 
@@ -477,6 +509,34 @@ def stream_tokens(piece: str) -> int:
     or a replay) is estimated at 4 characters per token. Characters/3.5 overcounted English
     thinking by 15-30%, so the budget ran out early."""
     return 1 if len(piece) <= 16 else -(-len(piece) // 4)
+
+
+def _history_message(reply) -> dict:
+    """The assistant message for the history, with every tool call's arguments valid JSON.
+
+    A malformed call is refused and its raw text kept in the feed; the history gets "{}" so
+    the next request (which re-parses every past call) doesn't fail on it.
+    """
+    m = reply.message()
+    if m.get("tool_calls"):
+        fixed = []
+        for c in m["tool_calls"]:
+            fn = c.get("function") or {}
+            raw = fn.get("arguments")
+            try:
+                ok = isinstance(json.loads(raw), dict) if isinstance(raw, str) and raw.strip() else False
+            except json.JSONDecodeError:
+                ok = False
+            fixed.append(c if ok else {**c, "function": {**fn, "arguments": "{}"}})
+        m["tool_calls"] = fixed
+    return m
+
+
+def _to_json(value) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _tool_msg(call: dict, content: str) -> dict:
@@ -516,9 +576,18 @@ def compact(content: str) -> str:
     return " ".join(parts)
 
 
+def compact_result(content: str) -> str:
+    """compact(), keeping the untrusted-content label around what was untrusted."""
+    if not content.startswith(UNTRUSTED_OPEN) or content.startswith("[compacted]"):
+        return compact(content)
+    head, _, rest = content.partition("\n")
+    inner = rest[:-len(UNTRUSTED_CLOSE)] if rest.endswith(UNTRUSTED_CLOSE) else rest
+    return f"{head}\n{_defang(compact(inner))}\n{UNTRUSTED_CLOSE}"
+
+
 def injection_warning(text: str) -> str | None:
     for pat in INJECTION_PATTERNS:
-        m = pat.search(text) if not pat.pattern.startswith("^") else re.search(pat.pattern, text, re.I | re.M)
+        m = pat.search(text)
         if m:
             return f"instruction-like text in the page: “{m.group(0).strip()[:60]}”"
     return None

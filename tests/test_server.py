@@ -151,6 +151,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(r.getheader("Location"), "/")
         r, _ = self.anon.req("GET", "/?token=wrong", raw=True)
         self.assertEqual(r.status, 401)
+        r, _ = self.anon.req("GET", "/?token=%C3%A9", raw=True)       # non-ASCII: refused, not a crash
+        self.assertEqual(r.status, 401)
 
     def test_everything_needs_auth_except_health_and_assets(self):
         self.assertEqual(self.anon.req("GET", "/api/state")[0], 401)
@@ -297,6 +299,7 @@ class ServerTests(unittest.TestCase):
         st, body = self.c.req("POST", "/api/model/apply", {"context": 8192})
         self.assertEqual((st, body["restarting"]), (202, True))
         self.assertTrue(self.c.req("GET", "/api/state")[1]["restarting"])
+        self.assertEqual(self.c.req("POST", "/api/model/apply", {"context": 8192})[0], 409)   # one at a time
         deadline = time.time() + 5
         while self.c.req("GET", "/api/state")[1]["restarting"] and time.time() < deadline:
             time.sleep(0.05)

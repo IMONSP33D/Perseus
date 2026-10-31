@@ -33,6 +33,24 @@ def spec(tmp: Path, crashes: int, max_restarts: int, msg: str = "boom"):
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_restart_during_crash_backoff_leaves_one_process(self):
+        tmp = Path(tempfile.mkdtemp())
+        sup = Supervisor(backoff=(1.0,), poll_s=0.05)
+        sup.add(spec(tmp, crashes=100, max_restarts=3))
+        try:
+            sup.start("svc")
+            deadline = time.time() + 10
+            while sup.procs["svc"].state != "restarting" and time.time() < deadline:
+                time.sleep(0.02)
+            sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+            m = sup.restart("svc", sleeper)
+            mine = m.proc
+            time.sleep(1.5)                                  # the watcher's backoff ends
+            self.assertIs(sup.procs["svc"].proc, mine)
+            self.assertIsNone(mine.poll())
+        finally:
+            sup.stop_all(timeout_s=2)
+
     def test_restarts_with_backoff_then_up(self):
         tmp = Path(tempfile.mkdtemp())
         states = []

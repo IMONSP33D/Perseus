@@ -33,7 +33,8 @@ class ToolFolder(unittest.TestCase):
         for src in ("import socket", "from urllib.request import urlopen", "import requests as r",
                     "import subprocess", "__import__('http')", "from http import client", "import ctypes",
                     "import _socket", "import os\nos.system('curl x')", "from os import popen", "import importlib",
-                    "import asyncio", "exec('x')"):
+                    "import asyncio", "exec('x')", "import os as o\no.system('x')", "import os\ngetattr(os, 'system')",
+                    "import builtins"):
             (d / "t.py").write_text(src + "\n")
             self.assertIsNotNone(import_problem(d / "t.py"), src)
         (d / "t.py").write_text("import math, json, os\nfrom datetime import date\nx = os.path.join('a', 'b')\n")
@@ -73,3 +74,67 @@ class HotReload(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignatureSchemas(unittest.TestCase):
+    def test_bare_decorator_infers_description_and_schema(self):
+        from typing import Annotated, Literal
+        from perseus.tools import ToolContext, tool
+        reg = Registry()
+
+        @tool(registry=reg)
+        def shout(text: Annotated[str, "the text"], times: int = 1, mode: Literal["up", "down"] = "up",
+                  tags: list[str] | None = None) -> str:
+            """Upper-case some text."""
+            return text.upper() * times
+
+        t = reg.get("shout")
+        self.assertEqual(t.description, "Upper-case some text.")
+        props = t.parameters["properties"]
+        self.assertEqual(t.parameters["required"], ["text"])
+        self.assertEqual(props["text"], {"type": "string", "description": "the text"})
+        self.assertEqual(props["mode"]["enum"], ["up", "down"])
+        self.assertEqual(props["tags"]["type"], ["array", "null"])
+        self.assertEqual(t.fn(ToolContext(), text="a", times=2), "AA")
+        self.assertEqual(reg.validate("shout", {"text": "x", "tags": None})[2], [])
+        self.assertTrue(reg.validate("shout", {"text": "x", "mode": "side"})[2])
+
+    def test_explicit_schema_keeps_ctx_under_any_name(self):
+        from perseus.tools import ToolContext, tool
+        reg = Registry()
+
+        @tool(registry=reg, description="d", parameters={"type": "object", "properties": {"x": {"type": "integer"}}})
+        def old_style(c, x):
+            return (c, x)
+
+        @tool(registry=reg, description="d", parameters={"type": "object", "properties": {"x": {"type": "integer"}}})
+        def no_ctx(x):
+            return x
+        ctx = ToolContext()
+        self.assertEqual(reg.get("old_style").fn(ctx, x=1), (ctx, 1))
+        self.assertEqual(reg.get("no_ctx").fn(ctx, x=2), 2)
+
+    def test_missing_description_and_name_clash_rejected(self):
+        from perseus.tools import Tool, tool
+        reg = Registry()
+        with self.assertRaises(ValueError):
+            @tool(registry=reg)
+            def nodoc(x: int):
+                return x
+        reg.add(Tool("dup", "d", {"type": "object", "properties": {}}, lambda ctx: 1, source="a"))
+        with self.assertRaises(ValueError):
+            reg.add(Tool("dup", "d", {"type": "object", "properties": {}}, lambda ctx: 1, source="b"))
+
+    def test_example_file_loads(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "example.py").write_text((TOOLS_DIR / "_example.py").read_text())
+        reg = Registry()
+        import perseus.tools as pt
+        orig = pt.REGISTRY
+        pt.REGISTRY = reg
+        try:
+            self.assertEqual(ToolLoader(d, reg, package="example_tools").refresh(), ["loaded example.py"])
+        finally:
+            pt.REGISTRY = orig
+        self.assertEqual(reg.all_names(), ["page_size", "repeat", "word_count"])
+        self.assertTrue(reg.loaded("page_size").lookup)

@@ -315,7 +315,10 @@ def plan(folder: Path, templates: dict[str, Template], yours: Yours, base: dict[
             used.add(ref)
             mine = values[ref]
             if ref in renamed:
-                p.moved.append((name, renamed[ref], ref))
+                old = renamed[ref]
+                if base is not None and old in base and yours.values.get(old) == base[old]:
+                    return tvalue              # the old key was never changed: take the new default
+                p.moved.append((name, old, ref))
             elif yours.where.get(ref) not in (None, name) and yours.legacy is None:
                 p.relocated.append((ref, yours.where[ref], name))
             if base is not None and ref in base and mine == base[ref] and tvalue != base[ref]:

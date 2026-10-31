@@ -14,6 +14,7 @@
 #
 # Usage:
 #   bash preflight.sh                    full run (safe to re-run; finished steps are skipped)
+#   bash preflight.sh --skip-download    everything except the model download
 #   bash preflight.sh --check            steps 1-3 only: validate everything, install nothing heavy
 #   bash preflight.sh --config DIR       use the config files in DIR instead of ./Config
 #                                        (a single FILE.toml still works, unsplit)
@@ -30,8 +31,10 @@
 # =============================================================================
 set -Eeuo pipefail
 
-CONFIG="$PWD/Config"                # both entry points read ./Config/ from where they run
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CALLER_DIR="$PWD"
+CONFIG="$ROOT/Config"               # ./Config/ wins when run from a folder that has one
+[[ -d "$PWD/Config" ]] && CONFIG="$PWD/Config"
 
 CHECK_ONLY=0
 INSTALL_DRIVER=0
@@ -61,7 +64,8 @@ else                                        # a Config folder: provider, setting
   CONFIG="$(cd "$CONFIG" && pwd)"
   POINTER_DIR="$CONFIG"
 fi
-DEFAULT_CONFIG="$PWD/Config"
+DEFAULT_CONFIG="$ROOT/Config"
+[[ -d "$PWD/Config" ]] && DEFAULT_CONFIG="$PWD/Config"
 cd "$ROOT"
 # shellcheck source=setup/pins.env
 source setup/pins.env
@@ -249,5 +253,6 @@ else
 fi
 
 START="python3 perseus.py"
+[[ "$CALLER_DIR" == "$ROOT" ]] || START="python3 $ROOT/perseus.py"
 [[ "$CONFIG" == "$DEFAULT_CONFIG" ]] || START+=" --config $CONFIG"
 bold $'\n'"Preflight done. Data in $DATA. Start Perseus with:  $START"
