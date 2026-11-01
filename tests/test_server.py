@@ -138,6 +138,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(calc["params"], [{"name": "x", "type": "number", "required": True, "description": ""}])
         fetch = next(t for t in body["tools"] if t["name"] == "fetch_url")
         self.assertTrue(fetch["web"])
+        self.assertIsNone(calc["requires"])                         # the Agent Tools page groups sandbox tools by this
         self.assertIn("Code Reviewer", [u["role"] for u in fetch["used_by"]])
 
     # ---------------------------------------------------------------- security

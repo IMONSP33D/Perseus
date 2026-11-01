@@ -285,7 +285,8 @@ class Dashboard:
                        "description": (v.get("description") or "") if isinstance(v, dict) else ""}
                       for k, v in props.items()]
             out.append({"name": name, "description": self.registry.description(t), "params": params, "web": self.registry.is_web(t),
-                        "timeout_s": t.timeout_s, "source": t.source, "used_by": used.get(name, [])})
+                        "timeout_s": t.timeout_s, "source": t.source, "requires": t.requires,
+                        "used_by": used.get(name, [])})
         errors = self.tool_errors() if self.tool_errors else {}
         return {"tools": out, "errors": [{"file": f, "error": e} for f, e in sorted(errors.items())]}
 
