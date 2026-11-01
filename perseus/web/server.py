@@ -39,7 +39,7 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.go
 
 LOCKED_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Perseus</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/assets/app.css"></head>
-<body class="pz-light"><main class="locked"><img src="/assets/logo-full.svg" alt="Perseus" class="locked-logo">
+<body class="pz-light"><main class="locked"><img src="/assets/logo-header.svg" alt="Perseus" class="locked-logo">
 <h1>Open the link from the terminal</h1><p>This dashboard needs the access link Perseus printed when it started
 (it ends in <code>?token=…</code>). It is also saved on the box in <code>run/dashboard.url</code> inside
 Perseus's data directory.</p></main></body></html>"""

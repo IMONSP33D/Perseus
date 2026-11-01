@@ -313,7 +313,7 @@
     const box = $('messages');
     if (!c || !c.messages.length) {
       box.replaceChildren(h('div', { class: 'hero' },
-        h('img', { src: '/assets/logo-full.svg', alt: 'Perseus — Weapon of Clarity' }),
+        h('img', { src: '/assets/logo-header.svg', alt: 'Perseus' }),
         ui.server ? h('p', { text: `${info().model} · ${info().hardware}` }) : null));
       return;
     }
