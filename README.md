@@ -230,33 +230,35 @@ If you want your config exactly as it was too, copy the files back from the matc
 
 ## Using the dashboard
 
-The left sidebar has New chat, two quick switches, the Agent Functions page and your recent chats. The gear in the header opens Settings.
+The left sidebar has New chat, Agent Tools, Settings and two tabs: your chats and the Tool feed. Click the logo to jump to the top of the chat. Back, at the top left, returns to the page you came from.
 
 | Control | What it does |
 | --- | --- |
-| Internet Access | Off: the model can't search or read web pages. The code runner isn't affected. |
-| Show Thinking | Shows or hides the model's thinking above each answer. |
-| Thinking: Off … Max | How long the model may think before answering (Low 4K, Medium 16K, High 32K tokens, or Max). When it runs out, Perseus wraps up and says so. |
-| Context ring | How much of the model's memory the last answer used. |
+| Context pill | Next to the chat title: how much of the model's context window the chat has used. Its bar runs green to red as it fills. |
+| Web on / Web off | Under the message box. Off: the model can't search or read web pages. The code runner isn't affected. |
+| System prompt switch | Under the message box: Researcher, Engineer, Planner or Custom. |
+| Low … Max thinking | Under the message box: how long the model may think before answering (Low 4K, Medium 16K, High 32K tokens, or Max). When it runs out, Perseus wraps up and says so. |
+| Gear | Under the message box: Chat settings, the per-question settings in one place. |
+| Thinking | Shown above each answer. Shrink folds it to one line; Expand opens it again. |
 | Close out | While it's working: stop thinking and researching, and write the answer now. |
 | Stop | The send button turns into Stop while an answer runs. You keep what it wrote so far. |
-| Attach | Add up to five text files, 60 MB in total, to a message. Each shows its size. A file bigger than the model's memory can't be read in full. |
-| Tool feed | The right-hand panel: every function call, its arguments, its result, and why it was blocked if it was. |
+| Attach | The button left of the message box. Add up to five text files, 60 MB in total, to a message. Each shows its size. A file bigger than the model's memory can't be read in full. |
+| Tool feed | A sidebar tab: every tool call, grouped by question, with its arguments, its result, and why it was blocked if it was. "N tool calls" under an answer opens it at that question. |
 | View raw | Under each answer: exactly what was sent to the model and what it sent back. |
 
-In Settings you can choose a role for the model (Engineer, Planner, Researcher or your own prompt), its memory size (8K, 32K, 128K or Max; options that don't fit your GPU are greyed out), creativity, answer length, research depth and which search engines to use.
+Settings has one box per setting: light or dark theme, context window (8K, 32K, 128K or Max; options that don't fit your GPU are greyed out), answer length, thinking, creativity, web access, research depth, search engines, the system prompt (or your own, up to 8,000 characters) and chat history. A new context window takes effect after Restart model, at the bottom of the page; everything else applies right away.
 
-Chats are kept in memory on the server and disappear when Perseus stops. Export all chats, in Settings, saves them as a JSON file.
+Chats are kept in memory on the server and disappear when Perseus stops. Export, under Chat History in Settings, saves them as a JSON file.
 
-Development Pipelines is greyed out for now. It's a multi-step workflow feature that isn't finished yet.
+Autonomous Pipelines is greyed out for now. It's a multi-step workflow feature that isn't finished yet.
 
 ## Agent functions
 
 <p align="center">
-  <img src="docs/screenshot-functions.png" alt="The Agent Functions page: six function tiles with Web or Local badges, and the details of output_file with its arguments" width="100%">
+  <img src="docs/screenshot-functions.png" alt="The Agent Tools page" width="100%">
 </p>
 
-These are what the model can do while it answers. Open Agent Functions in the sidebar and hover over one to see what it does and the arguments it takes.
+These are what the model can do while it answers. Open Agent Tools in the sidebar and pick one to see what it does and the arguments it takes. They're grouped by where a call goes: on this box, the public web, or the throwaway sandbox.
 
 | Function | What it does |
 | --- | --- |
@@ -289,7 +291,7 @@ The rules:
 - Don't import network or process libraries (`socket`, `requests`, `subprocess` and so on). Perseus refuses to load a file that does.
 - Take `ctx` as the first argument when you need it. To read the web, use `ctx.gateway.fetch(url)`. To search, use `ctx.search`. To run code, use `ctx.sandbox`.
 - Set `lookup=True` on anything that reads the web, for example `@tool(lookup=True)`. It then counts towards the research limit, and its results are marked as untrusted.
-- Every tool needs a unique name. A file that reuses another file's tool name is refused, and the reason appears on the Agent Functions page.
+- Every tool needs a unique name. A file that reuses another file's tool name is refused, and the reason appears on the Agent Tools page.
 
 ## The code runner
 

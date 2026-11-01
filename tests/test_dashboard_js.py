@@ -14,7 +14,7 @@ APP_JS = Path(__file__).resolve().parent.parent / "perseus" / "web" / "static" /
 BROWSER = {"AbortController", "Date", "Error", "Set", "Map", "String", "Number", "Boolean", "Array", "Object",
            "JSON", "Promise", "TextDecoder", "TextEncoder", "URL", "clearTimeout", "setTimeout", "setInterval",
            "clearInterval", "encodeURIComponent", "decodeURIComponent", "fetch", "matchMedia", "parseInt",
-           "parseFloat", "isNaN", "requestAnimationFrame", "cancelAnimationFrame", "structuredClone", "alert"}
+           "parseFloat", "isNaN", "requestAnimationFrame", "cancelAnimationFrame", "structuredClone", "alert", "RegExp"}
 KEYWORDS = {"if", "for", "while", "switch", "catch", "return", "typeof", "await", "async", "new", "function"}
 # `get(...)` / `set(...)` are the shorthand methods of the `store` object; the rest are words that sit
 # before a parenthesis in UI text or comments

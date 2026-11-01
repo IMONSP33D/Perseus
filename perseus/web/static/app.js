@@ -1,4 +1,4 @@
-/* Perseus dashboard client. No framework, no build step.
+/* Perseus dashboard client, the Aegis design. No framework, no build step.
    Every piece of model or web text reaches the page as a text node (never innerHTML). */
 'use strict';
 
@@ -13,6 +13,7 @@
   };
   const iconTpl = $('icons').content;
   const icon = (name) => iconTpl.querySelector(`[data-i="${name}"]`).cloneNode(true);
+  const withClass = (el, cls) => { el.classList.add(cls); return el; };
 
   function h(tag, attrs, ...kids) {
     const el = document.createElement(tag);
@@ -31,12 +32,13 @@
   }
 
   const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  const fileSize = (n) => (n < 1024 ? `${n} B` : kb(n));   // a chip or card size: 512 B, 234 KB, 1.2 MB
+  const fileSize = (n) => (n < 1024 ? `${n} B` : kb(n));   // 512 B, 234 KB, 1.2 MB
   const kb = (n) => n >= 1024 * 1024 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
   const secs = (ms) => (ms / 1000).toFixed(1) + ' s';
   const tokensLabel = (n) => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'K' : String(n);
   const ctxLabel = (n) => n >= 1024 ? Math.round(n / 1024) + 'K' : String(n);
   const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
   async function api(method, path, body) {
     const r = await fetch(path, {
@@ -53,9 +55,9 @@
   // ------------------------------------------------------------------ state
   const ui = {
     theme: store.get('theme', matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
-    showThinking: store.get('thought', true),
-    feedOpen: store.get('feed', true),
-    view: 'chat',
+    view: 'chat',            // chat | settings | tools
+    history: [],             // earlier views, for Back
+    sideTab: 'chats',        // chats | feed
     server: null,            // /api/state
     list: [],                // chat summaries, newest first
     chats: {},               // id -> full chat
@@ -63,21 +65,72 @@
     streams: {},             // chat id -> { controller }
     closing: {},             // chat id -> true while the model writes its closed-out answer
     feedOpenTurns: {},       // chat id -> Set of earlier question numbers opened in the feed
-    feedCleared: store.get('feedCleared', {}),   // chat id -> last event id hidden by Clear (display only)
-    thinkOpen: {},           // message id -> bool
+    feedShutTurns: {},       // chat id -> Set of current question numbers folded by the reader
+    callOpen: new Set(),     // tool event ids with their details open
+    thinkShrunk: {},         // message id -> true when its thinking is folded to one line
     fileOpen: {},            // chat id + file id -> preview open
     fileText: {},            // chat id + file id -> fetched content (or { error })
     thinkTouched: {},        // message id -> time of the reader's last input in its thinking box
     thinkFollow: {},         // message id -> false once the reader scrolls up in a streaming thinking box
-    menuOpen: false,
+    menu: null,              // which message-box menu is open: persona | think
     attachments: [],
-    pending: null,           // { context, creativity, length } chosen in settings, not yet applied
-    freshFeed: new Set(),
+    pending: null,           // { context } chosen in settings, waiting for a restart
   };
 
   const active = () => (ui.activeId && ui.chats[ui.activeId]) || null;
   const settings = () => (ui.server ? ui.server.settings : {});
   const info = () => (ui.server ? ui.server.info : {});
+
+  const THINK = { low: ['4K', 4096], medium: ['16K', 16384], high: ['32K', 32768], max: ['MAX', null] };
+  const PERSONA_ORDER = ['researcher', 'engineer', 'planner', 'custom'];
+  const PERSONA_ICON = { engineer: 'code', planner: 'plan', researcher: 'research', custom: 'pen' };
+  const PERSONA_SHORT = {
+    researcher: 'Finds sources and cites them.', engineer: 'Precise, working answers with code.',
+    planner: 'Concrete, ordered steps.', custom: 'Your own instructions.',
+  };
+  const ENGINE_NAMES = { duckduckgo: 'DuckDuckGo', wikipedia: 'Wikipedia', github: 'GitHub', arxiv: 'arXiv', stackoverflow: 'Stack Overflow',
+    mojeek: 'Mojeek', google: 'Google', bing: 'Bing', brave: 'Brave', startpage: 'Startpage', qwant: 'Qwant' };
+  const CUSTOM_MAX = 8000;
+
+  // ------------------------------------------------------------------ syntax colours
+  // A small tokenizer per language; each match becomes a span with a t-* class. Unknown languages stay plain.
+  const KW_PY = 'def|return|for|while|in|is|try|except|finally|raise|import|from|as|if|else|elif|continue|break|pass|class|with|not|and|or|lambda|yield|async|await|global|nonlocal|None|True|False';
+  const KW_JS = 'const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|import|from|export|default|try|catch|finally|throw|async|await|typeof|instanceof|of|in|this|null|undefined|true|false|interface|type';
+  const KW_SH = 'if|then|else|elif|fi|for|in|do|done|while|case|esac|function|return|export|local';
+  const RULES = {
+    py: [new RegExp(`(#[^\\n]*)|("""[\\s\\S]*?"""|'''[\\s\\S]*?'''|[rbf]?"(?:\\\\.|[^"\\\\\\n])*"|[rbf]?'(?:\\\\.|[^'\\\\\\n])*')|\\b(${KW_PY})\\b|\\b(\\d+(?:\\.\\d+)?)\\b|\\b(str|int|float|dict|list|set|tuple|len|range|print|open|self|Exception|ValueError|TypeError|KeyError)\\b|\\b([A-Za-z_]\\w*)(?=\\()`, 'g'),
+      ['com', 'str', 'kw', 'num', 'bi', 'fn']],
+    js: [new RegExp(`(\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/)|("(?:\\\\.|[^"\\\\\\n])*"|'(?:\\\\.|[^'\\\\\\n])*'|\`(?:\\\\.|[^\`\\\\])*\`)|\\b(${KW_JS})\\b|\\b(\\d+(?:\\.\\d+)?)\\b|\\b(console|document|window|Math|JSON|Promise|Array|Object|String|Number)\\b|\\b([A-Za-z_$][\\w$]*)(?=\\()`, 'g'),
+      ['com', 'str', 'kw', 'num', 'bi', 'fn']],
+    json: [/("(?:\\.|[^"\\])*")(?=\s*:)|("(?:\\.|[^"\\])*")|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|([{}[\],:])/g,
+      ['key', 'str', 'num', 'num', 'punct']],
+    sh: [new RegExp(`(#[^\\n]*)|("(?:\\\\.|[^"\\\\])*"|'[^']*')|\\b(${KW_SH})\\b|(\\s-{1,2}[\\w-]+)|(\\$\\{?\\w+\\}?)`, 'g'),
+      ['com', 'str', 'kw', 'key', 'bi']],
+    res: [/(<<<UNTRUSTED CONTENT[^\n]*|<<<END UNTRUSTED CONTENT>>>)|^(Blocked:|Error:)|^([A-Za-z][\w ]{0,20}:)(?= )/gm,
+      ['flag', 'tag', 'key']],
+    tmpl: [/(<\|[^|>]+\|>|<\/?(?:system|user|assistant|tool_call|tool_response|think)>)|(?<=<\|im_start\|>)(system|user|assistant|tool)/g,
+      ['tag', 'kw']],
+  };
+  const LANG = { python: 'py', py: 'py', javascript: 'js', js: 'js', ts: 'js', typescript: 'js', jsx: 'js', tsx: 'js', json: 'json',
+    bash: 'sh', sh: 'sh', shell: 'sh', zsh: 'sh', console: 'sh', res: 'res', tmpl: 'tmpl' };
+  function highlight(code, lang) {
+    const rule = RULES[LANG[(lang || '').toLowerCase()]];
+    if (!rule) return [code];
+    const [re, names] = rule;
+    const out = [];
+    let last = 0, m;
+    re.lastIndex = 0;
+    while ((m = re.exec(code))) {
+      if (m[0] === '') { re.lastIndex++; continue; }
+      if (m.index > last) out.push(code.slice(last, m.index));
+      let g = 1;
+      while (g < m.length && m[g] === undefined) g++;
+      out.push(h('span', { class: 't-' + (names[g - 1] || 'punct') }, m[0]));
+      last = m.index + m[0].length;
+    }
+    if (last < code.length) out.push(code.slice(last));
+    return out;
+  }
 
   // ------------------------------------------------------------------ markdown (safe: DOM nodes only)
   function inline(text) {
@@ -98,19 +151,33 @@
   }
   const link = (label, href) => h('a', { href, target: '_blank', rel: 'noopener noreferrer nofollow' }, label);
 
-  // A fenced code block with a Copy button in its top-right corner.
-  function codeBlock(text, lang) {
-    const label = h('span', { class: 'copy-label', text: 'Copy' });
-    const btn = h('button', { type: 'button', class: 'code-copy', 'aria-label': 'Copy code' }, icon('copy'), label);
+  function copyButton(source, label, cls) {
+    const getText = source;   // a function giving the text (or a promise of it)
+    const idle = () => [icon('copy'), h('span', { text: 'Copy' })];
+    const btn = h('button', { type: 'button', class: cls, 'aria-label': label }, idle());
     btn.addEventListener('click', async () => {
-      const ok = await copyText(text);
-      btn.replaceChildren(icon(ok ? 'check' : 'x'), h('span', { class: 'copy-label', text: ok ? 'Copied' : 'Copy failed' }));
+      let ok = false;
+      try { ok = await copyText(await getText()); } catch (e) { banner(e.message); }
+      btn.replaceChildren(icon(ok ? 'check' : 'x'), h('span', { text: ok ? 'Copied' : 'Copy failed' }));
       btn.classList.toggle('done', ok);
       clearTimeout(btn._t);
-      btn._t = setTimeout(() => { btn.replaceChildren(icon('copy'), h('span', { class: 'copy-label', text: 'Copy' })); btn.classList.remove('done'); }, 1600);
+      btn._t = setTimeout(() => { btn.replaceChildren(...idle()); btn.classList.remove('done'); }, 1600);
     });
-    return h('div', { class: 'code-wrap' },
-      h('pre', { class: 'code', 'aria-label': lang ? lang + ' code' : 'code' }, text), btn);
+    return btn;
+  }
+
+  // A fenced code block: a header with the language and Copy, then the coloured code (line numbers on request).
+  function codeBlock(text, lang, numbered) {
+    const pre = h('pre', { class: 'code', 'aria-label': lang ? lang + ' code' : 'code' }, highlight(text, lang));
+    const body = numbered
+      ? h('div', { class: 'code-lines' },
+        h('pre', { class: 'ln', 'aria-hidden': 'true' }, text.split('\n').map((_, i) => String(i + 1)).join('\n')), pre)
+      : pre;
+    return h('div', { class: 'code-block' },
+      h('div', { class: 'code-head' },
+        h('span', { class: 'code-lang mono', text: lang || 'text' }),
+        copyButton(() => text, 'Copy code', 'code-copy')),
+      body);
   }
   async function copyText(text) {
     try {
@@ -178,133 +245,118 @@
     return blocks;
   }
 
-  // ------------------------------------------------------------------ theme and layout
+  // ------------------------------------------------------------------ theme, views
   function applyTheme() {
-    app.classList.toggle('pz-dark', ui.theme === 'dark');
-    app.classList.toggle('pz-light', ui.theme !== 'dark');
-    document.body.classList.toggle('pz-dark-body', ui.theme === 'dark');
-    $('raw').className = 'raw ' + (ui.theme === 'dark' ? 'pz-dark' : 'pz-light');
-    $('theme-light').setAttribute('aria-pressed', String(ui.theme !== 'dark'));
-    $('theme-dark').setAttribute('aria-pressed', String(ui.theme === 'dark'));
-  }
-
-  function relayout() {
-    const feedVisible = ui.feedOpen && ui.view === 'chat';
-    const need = 300 + 560 + (feedVisible ? 340 : 0);
-    app.classList.toggle('fixed', window.innerWidth >= need);
-  }
-
-  // ------------------------------------------------------------------ sidebar
-  function toggleDefs() {
-    const s = settings();
-    return [
-      { id: 'internet', label: 'Internet Access', icon: 'globe', on: !!s.internet },
-      { id: 'thought', label: 'Show Thinking', icon: 'eye', on: ui.showThinking },
-      { id: 'sandbox', label: 'Sandbox Mode', icon: 'flask', on: false, disabled: true, sub: 'Coming in a later release' },
-    ];
-  }
-
-  async function flipToggle(id) {
-    if (id === 'thought') {
-      ui.showThinking = !ui.showThinking;
-      store.set('thought', ui.showThinking);
-      renderToggles();
-      renderMessages();
-      return;
+    const dark = ui.theme === 'dark';
+    for (const el of [app, $('raw'), $('chat-settings')]) {
+      el.classList.toggle('pz-dark', dark);
+      el.classList.toggle('pz-light', !dark);
     }
-    if (id === 'internet') await patchSettings({ internet: !settings().internet });
+    document.body.classList.toggle('pz-dark-body', dark);
+  }
+  function setTheme(t) { ui.theme = t; store.set('theme', t); applyTheme(); renderSettings(); }
+
+  function go(view) {
+    if (ui.view === view) return;
+    ui.history.push(ui.view);
+    if (ui.history.length > 20) ui.history.shift();
+    showView(view);
+  }
+  function back() { showView(ui.history.pop() || 'chat'); }
+  function showView(view) {
+    ui.view = view; ui.menu = null; ui.pending = null;
+    renderAll();
+    window.scrollTo(0, 0);
+    if (view === 'tools') loadTools();
+    if (view === 'chat') scrollToBottom();
   }
 
-  function renderToggles() {
-    const make = (cls) => toggleDefs().map((d) => h('button', {
-      type: 'button', role: 'switch', class: cls, 'aria-checked': String(d.on), disabled: d.disabled,
-      title: d.sub || null, onclick: () => flipToggle(d.id),
-    },
-    cls === 'toggle' ? h('span', { class: 'toggle-icon' }, icon(d.icon)) : null,
-    h('span', { class: 'toggle-label' }, d.label, cls === 'toggle' && d.sub ? h('span', { class: 'toggle-sub' }, d.sub) : null),
-    h('span', { class: 'switch', 'aria-hidden': 'true' })));
-    $('side-toggles').replaceChildren(...make('toggle'));
-    $('settings-toggles').replaceChildren(...make('toggle settings-toggle'));
+  // ------------------------------------------------------------------ left bar
+  function renderNav() {
+    for (const id of ['nav-tools', 'nav-settings']) {
+      const b = $(id);
+      const on = ui.view === b.dataset.view;
+      b.classList.toggle('active', on);
+      if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    }
+    const n = tools.list ? tools.list.length : (ui.server && ui.server.tools ? ui.server.tools.length : null);
+    const badge = $('nav-tools-count');
+    badge.textContent = n == null ? '' : String(n);
+    if (n == null) badge.removeAttribute('aria-label'); else badge.setAttribute('aria-label', plural(n, 'tool'));
   }
+
+  function renderSideTabs() {
+    const feed = ui.sideTab === 'feed';
+    $('tab-chats').setAttribute('aria-selected', String(!feed));
+    $('tab-feed').setAttribute('aria-selected', String(feed));
+    $('tab-chats').tabIndex = feed ? -1 : 0;
+    $('tab-feed').tabIndex = feed ? 0 : -1;
+    $('panel-chats').hidden = feed;
+    $('panel-feed').hidden = !feed;
+  }
+  function setSideTab(tab) { ui.sideTab = tab; store.set('sideTab', tab); renderSideTabs(); renderFeed(); }
 
   function renderChatList() {
     const rows = ui.list.map((c) => {
-      const on = c.id === ui.activeId;
-      return h('div', { class: 'chat-row' + (on ? ' active' : '') },
+      const on = c.id === ui.activeId && ui.view === 'chat';
+      return h('li', { class: 'chat-row' + (on ? ' active' : '') },
         h('button', { type: 'button', class: 'chat-pick', 'aria-current': on ? 'true' : null, title: c.title,
-          onclick: () => openChat(c.id) }, c.title),
+          onclick: () => openChat(c.id) }, h('span', { class: 'chat-title', text: c.title })),
         c.busy ? h('span', { class: 'chat-busy', title: 'Answering…' }) : null,
-        on ? h('button', { type: 'button', class: 'chat-del', 'aria-label': 'Delete chat', onclick: () => deleteChat(c.id) }, icon('x')) : null);
+        h('button', { type: 'button', class: 'chat-del', 'aria-label': 'Delete ' + c.title, title: 'Delete chat',
+          onclick: () => deleteChat(c.id) }, icon('x')));
     });
-    $('chat-list').replaceChildren(...(rows.length ? rows : [h('p', { class: 'empty-chats', text: 'No chats yet.' })]));
+    $('chat-list').replaceChildren(...(rows.length ? rows : [h('li', { class: 'empty-chats', text: 'No chats yet.' })]));
   }
 
+  // ------------------------------------------------------------------ top bar
   function statusOf() {
     const st = ui.server && ui.server.status;
-    if (!ui.server) return { cls: '', short: 'Connecting…', long: 'Connecting to Perseus…' };
-    if (ui.server.restarting) return { cls: 'restarting', short: 'Restarting…', long: 'Model server restarting' };
+    if (!ui.server) return { cls: '', short: 'Connecting…', long: 'Connecting…' };
+    if (ui.server.restarting) return { cls: 'restarting', short: 'Restarting…', long: 'Model restarting' };
     const v = st && (st.vLLM || st.vllm);
     const state = v ? v.state : 'up';
-    if (state === 'up') return { cls: 'up', short: 'Running', long: 'Model server running' };
-    if (state === 'restarting' || state === 'starting') return { cls: 'restarting', short: 'Restarting…', long: 'Model server restarting' };
-    return { cls: 'down', short: 'Offline', long: 'Model server offline' + (v && v.reason ? ': ' + v.reason : '') };
+    if (state === 'up') return { cls: 'up', short: 'Model running', long: 'Model running' };
+    if (state === 'restarting' || state === 'starting') return { cls: 'restarting', short: 'Restarting…', long: 'Model restarting' };
+    return { cls: 'down', short: 'Model offline', long: 'Model offline' + (v && v.reason ? ': ' + v.reason : '') };
   }
 
   function renderStatus() {
     const s = statusOf();
     $('status-dot').className = 'status-dot ' + s.cls;
     $('status-long').textContent = s.long;
-    $('ctx-size').textContent = ui.server ? ctxLabel(info().context) : '';
-    $('server-dot').className = 'pill-dot ' + s.cls;
+    $('status-model').textContent = ui.server ? info().model || '' : '';
+    $('server-dot').className = 'status-dot ' + s.cls;
     $('server-label').textContent = s.short;
   }
 
-  // ------------------------------------------------------------------ header
   function renderHeader() {
-    const inSettings = ui.view === 'settings';
-    const inChat = ui.view === 'chat';
     const c = active();
-    $('header-title').textContent = inSettings ? 'Settings' : ui.view === 'pipelines' ? 'Development Pipelines'
-      : ui.view === 'tools' ? 'Agent Functions' : (c ? c.title : 'New chat');
-    $('chat-controls').hidden = !inChat;
-    const gear = $('gear');
-    gear.setAttribute('aria-pressed', String(inSettings));
-    gear.setAttribute('aria-label', inSettings ? 'Close settings' : 'Open settings');
-    $('show-feed').hidden = ui.feedOpen || !inChat;
-
-    const s = settings();
-    const pill = $('internet-pill');
-    pill.setAttribute('aria-pressed', String(!!s.internet));
-    pill.querySelector('.pill-label').textContent = s.internet ? 'Internet On' : 'Internet Off';
-
-    const thinks = !!info().thinks;
-    $('think-wrap').hidden = !thinks;
-    $('think-label').textContent = 'Thinking: ' + cap(s.thinking || 'medium');
-    $('think-btn').setAttribute('aria-expanded', String(ui.menuOpen));
-    const menu = $('think-menu');
-    menu.hidden = !ui.menuOpen;
-    if (ui.menuOpen) {
-      menu.replaceChildren(...(ui.server.thinking || []).map((lvl) => {
-        const on = s.thinking === lvl;
-        return h('button', { type: 'button', role: 'menuitemradio', class: 'menu-item', 'aria-checked': String(on),
-          onclick: () => { ui.menuOpen = false; patchSettings({ thinking: lvl }); } }, cap(lvl), on ? icon('check') : null);
-      }));
-    }
-    renderRing();
+    $('header-title').textContent = ui.view === 'settings' ? 'Settings' : ui.view === 'tools' ? 'Agent Tools'
+      : (c && c.messages.length ? c.title : 'New chat');
+    $('back').hidden = !ui.history.length;
+    renderContext();
   }
 
-  function renderRing() {
+  // Context used by the chat so far: the pill's bar runs green to red as it fills.
+  function renderContext() {
+    const pill = $('ctx-pill');
     const c = active();
+    pill.hidden = ui.view !== 'chat' || !ui.server;
+    if (pill.hidden) return;
     const total = info().context || 1;
     const used = (c && c.ctxUsed) || 0;
-    const pct = Math.min(1, used / total);
-    const label = Math.round(pct * 100) + '%';
-    $('ring-fill').style.strokeDashoffset = (113.1 * (1 - pct)).toFixed(2);
-    $('ring-fill').classList.toggle('hot', pct >= 0.8);
-    $('ctx-pct').textContent = label;
-    const aria = `Context used: ${label} of ${ctxLabel(total)}` + (used ? ` (${used.toLocaleString()} tokens)` : '');
-    $('ctx-ring').setAttribute('aria-label', aria);
-    $('ctx-ring').title = aria;
+    const frac = Math.min(1, used / total);
+    const pct = (frac * 100).toFixed(2).replace(/\.00$/, '') + '%';
+    $('ctx-pct').textContent = pct;
+    $('ctx-of').textContent = `of ${ctxLabel(total)} context`;
+    const fill = $('ctx-fill');
+    fill.style.width = (frac * 100).toFixed(2) + '%';
+    fill.style.backgroundColor = `hsl(${Math.round(135 * (1 - frac))}, 68%, 48%)`;
+    pill.setAttribute('aria-valuenow', (frac * 100).toFixed(2));
+    const tip = `${used.toLocaleString()} of ${total.toLocaleString()} tokens of context used`;
+    pill.setAttribute('aria-label', tip);
+    pill.title = tip;
   }
 
   // ------------------------------------------------------------------ messages
@@ -332,43 +384,46 @@
     const phase = m.streaming ? (m.phase || (m.content ? 'answering' : 'thinking')) : null;
     const stillThinking = phase === 'thinking';
     const wrapping = phase === 'closing';
-    const showThink = ui.showThinking && hasReasoning;
-    const open = !!ui.thinkOpen[m.id];
     const kids = [];
-    if (showThink) {
-      const used = m.think_used || 0, budget = m.think_budget || 0;
-      const count = budget ? `${tokensLabel(used)} / ${tokensLabel(budget)}` : (used ? `${tokensLabel(used)} tokens` : '');
-      const status = wrapping ? (m.content ? 'Writing final answer…' : 'Wrapping up…')
-        : stillThinking ? 'Thinking…' + (count ? ' ' + count : '')
-        : (m.think_secs != null ? `Thought for ${Math.max(1, Math.round(m.think_secs))}s` : '') + (used ? ` · ${tokensLabel(used)} tokens` : '');
-      const frac = budget ? Math.min(1, used / budget) : 0;
-      const meter = m.streaming && budget && phase !== 'answering'
-        ? h('div', { class: 'think-meter' + (frac >= 0.8 ? ' near' : ''), role: 'progressbar', 'aria-label': 'Thinking budget used',
-            'aria-valuemin': '0', 'aria-valuemax': String(budget), 'aria-valuenow': String(Math.min(used, budget)) },
-            (() => { const f = h('div', { class: 'think-meter-fill' }); f.style.width = (frac * 100).toFixed(1) + '%'; return f; })())
-        : null;   // width set from script: the CSP blocks style="" attributes
-      const brain = icon('brain'); brain.classList.add('brain');
-      const chev = icon('chevron'); chev.classList.add('chev');
-      kids.push(h('div', { class: 'think' },
-        h('button', { type: 'button', class: 'think-toggle', 'aria-expanded': String(open),
-          onclick: () => { ui.thinkOpen[m.id] = !open; replaceMessage(m); } },
-        brain, h('span', { class: 'think-title', text: 'Thinking Process' }), h('span', { class: 'think-status', text: status }), chev),
-        meter,
-        open ? thinkBox(m) : null));
-    }
-    if (!showThink && !m.content && (stillThinking || wrapping)) kids.push(h('p', { class: 'waiting', text: wrapping ? 'Wrapping up…' : 'Thinking…' }));
+    if (hasReasoning) kids.push(thinkNode(m, phase));
+    if (!hasReasoning && !m.content && (stillThinking || wrapping)) kids.push(h('p', { class: 'waiting', text: wrapping ? 'Wrapping up…' : 'Thinking…' }));
     if (phase === 'tools' && !m.content) kids.push(h('p', { class: 'waiting', text: 'Using tools…' }));
     kids.push(h('div', { class: 'answer' }, markdown(m.content, m.streaming && !!m.content)));
     if (m.files && m.files.length) kids.push(fileList(m));
     // later steps (after a web search) think again below text that is already shown
-    if (m.content && (phase === 'tools' || (!showThink && (stillThinking || wrapping))))
+    if (m.content && (phase === 'tools' || (!hasReasoning && (stillThinking || wrapping))))
       kids.push(h('p', { class: 'waiting', text: wrapping ? 'Wrapping up…' : phase === 'tools' ? 'Using tools…' : 'Thinking…' }));
     if (!m.streaming && !m.content && !m.error && !m.stopped && hasReasoning)
-      kids.push(h('p', { class: 'note-warn', text: 'No answer came back; the thinking is above. Ask again, or raise Length or Thinking.' }));
+      kids.push(h('p', { class: 'note-warn', text: 'No answer came back; the thinking is above. Ask again, or raise Answer Output Length or Thinking Complexity.' }));
     if (!m.streaming) kids.push(footer(m));
-    return h('div', { class: 'msg-ai', 'data-id': m.id },
-      h('span', { class: 'avatar' }, h('img', { src: '/assets/mark.png', alt: '' })),
-      h('div', { class: 'ai-body' }, kids));
+    return h('div', { class: 'msg-ai', 'data-id': m.id }, kids);
+  }
+
+  // Thinking is always shown; Shrink folds it to one line, Expand opens it again.
+  function thinkNode(m, phase) {
+    const stillThinking = phase === 'thinking', wrapping = phase === 'closing';
+    const open = !ui.thinkShrunk[m.id];
+    const used = m.think_used || 0, budget = m.think_budget || 0;
+    const count = budget ? `${tokensLabel(used)} / ${tokensLabel(budget)}` : (used ? `${tokensLabel(used)} tokens` : '');
+    const status = wrapping ? (m.content ? 'Writing final answer…' : 'Wrapping up…')
+      : stillThinking ? 'Thinking…' + (count ? ' ' + count : '')
+      : (m.think_secs != null ? `Thought for ${Math.max(1, Math.round(m.think_secs))}s` : 'Thought') + (used ? ` · ${tokensLabel(used)} tokens` : '');
+    const frac = budget ? Math.min(1, used / budget) : 0;
+    let meter = null;
+    if (m.streaming && budget && phase !== 'answering') {
+      const fill = h('div', { class: 'think-meter-fill' });
+      fill.style.width = (frac * 100).toFixed(1) + '%';    // set from script: the CSP blocks style="" attributes
+      meter = h('div', { class: 'think-meter' + (frac >= 0.8 ? ' near' : ''), role: 'progressbar', 'aria-label': 'Thinking budget used',
+        'aria-valuemin': '0', 'aria-valuemax': String(budget), 'aria-valuenow': String(Math.min(used, budget)) }, fill);
+    }
+    const lastLine = (m.reasoning || '').trim().split('\n').filter((l) => l.trim()).pop() || '';
+    return h('div', { class: 'think' + (open ? ' open' : '') },
+      h('button', { type: 'button', class: 'think-toggle', 'aria-expanded': String(open),
+        onclick: () => { ui.thinkShrunk[m.id] = open; replaceMessage(m); } },
+      h('span', { class: 'think-title', text: 'Thinking' }), h('span', { class: 'think-status', text: status }),
+      h('span', { class: 'think-verb' }, open ? 'Shrink' : 'Expand', withClass(icon('chevron'), 'chev'))),
+      meter,
+      open ? thinkBox(m) : h('p', { class: 'think-line', text: lastLine }));
   }
 
   // The thinking box follows new text while it streams, unless the reader has scrolled up in it;
@@ -422,17 +477,9 @@
     const key = cid + ':' + f.id;
     const open = !!ui.fileOpen[key];
     const meta = [f.language && f.language !== 'text' ? f.language : null,
-      f.lines != null ? `${f.lines} line${f.lines === 1 ? '' : 's'}` : null,
+      f.lines != null ? plural(f.lines, 'line') : null,
       f.bytes != null ? fileSize(f.bytes) : null].filter(Boolean).join(' · ');
-    const copyBtn = h('button', { type: 'button', class: 'file-btn', 'aria-label': `Copy ${f.name}` }, icon('copy'), h('span', { text: 'Copy' }));
-    copyBtn.addEventListener('click', async () => {
-      let ok = false;
-      try { ok = await copyText(await fileContent(cid, f)); } catch (e) { banner(e.message); }
-      copyBtn.replaceChildren(icon(ok ? 'check' : 'x'), h('span', { text: ok ? 'Copied' : 'Copy failed' }));
-      clearTimeout(copyBtn._t);
-      copyBtn._t = setTimeout(() => copyBtn.replaceChildren(icon('copy'), h('span', { text: 'Copy' })), 1600);
-    });
-    const previewBtn = h('button', { type: 'button', class: 'file-btn', 'aria-expanded': String(open),
+    const previewBtn = h('button', { type: 'button', class: 'btn', 'aria-expanded': String(open),
       'aria-label': `${open ? 'Hide' : 'Preview'} ${f.name}`,
       onclick: async () => {
         ui.fileOpen[key] = !open;
@@ -441,21 +488,20 @@
         }
         replaceMessage(m);
       } }, icon('eye'), h('span', { text: open ? 'Hide' : 'Preview' }));
-    const download = h('a', { class: 'file-btn', href: fileUrl(cid, f), download: f.name, 'aria-label': `Download ${f.name}` },
+    const download = h('a', { class: 'btn', href: fileUrl(cid, f), download: f.name, 'aria-label': `Download ${f.name}` },
       icon('download'), h('span', { text: 'Download' }));
     const text = ui.fileText[key];
     const preview = !open ? null
-      : typeof text === 'string' ? h('div', { class: 'file-preview' }, codeBlock(text, f.language))
-      : text && text.error ? h('p', { class: 'note-warn', text: `Couldn't load the file: ${text.error}` })
-      : h('p', { class: 'waiting', text: 'Loading…' });
-    const fileIcon = icon('file'); fileIcon.classList.add('file-icon');
+      : typeof text === 'string' ? h('div', { class: 'file-preview' }, codeBlock(text, f.language, true))
+      : text && text.error ? h('p', { class: 'file-desc', text: `Couldn't load the file: ${text.error}` })
+      : h('p', { class: 'file-desc', text: 'Loading…' });
     return h('div', { class: 'file-card' },
       h('div', { class: 'file-head' },
-        fileIcon,
+        withClass(icon('file'), 'file-icon'),
         h('div', { class: 'file-info' },
           h('span', { class: 'file-name', text: f.name }),
           meta ? h('span', { class: 'file-meta', text: meta }) : null),
-        h('div', { class: 'file-actions' }, previewBtn, copyBtn, download)),
+        h('div', { class: 'file-actions' }, previewBtn, copyButton(() => fileContent(cid, f), `Copy ${f.name}`, 'btn'), download)),
       f.description ? h('p', { class: 'file-desc', text: f.description }) : null,
       preview);
   }
@@ -468,11 +514,13 @@
       length: 'Ran out of room while thinking · wrapped up',
       steps: 'Tool step limit reached · wrapped up' }[m.closed];
     if (closed) bits.push(h('span', { class: 'warn', text: closed }));
-    if (m.truncated) bits.push(h('span', { class: 'warn', text: 'Cut off at the length limit · try Length: Long' }));
-    if (m.lookups) bits.push(h('span', { text: `${m.lookups} of ${m.limit} lookups` }));
+    if (m.truncated) bits.push(h('span', { class: 'warn', text: 'Cut off at the length limit · try a longer Answer Output Length' }));
     if (m.duration != null) bits.push(h('span', { text: `${m.duration.toFixed(1)} s` }));
     const u = m.usage || {};
-    if (u.completion_tokens) bits.push(h('span', { text: `${tokensLabel(u.completion_tokens)} tokens out` }));
+    if (u.completion_tokens) bits.push(h('span', { text: `${tokensLabel(u.completion_tokens)} tokens` }));
+    const c = active();
+    const calls = c && m.turn ? (c.feed || []).filter((e) => e.turn === m.turn).length : 0;
+    if (calls) bits.push(h('button', { type: 'button', class: 'link-btn', onclick: () => showCalls(m.turn) }, plural(calls, 'tool call')));
     bits.push(h('button', { type: 'button', class: 'link-btn', onclick: () => openRaw(m) }, 'View raw'));
     return h('div', { class: 'msg-foot' }, bits);
   }
@@ -499,7 +547,7 @@
         const old = $('messages').querySelector(`[data-id="${CSS.escape(id)}"]`);
         if (msg && old) {
           const oldBox = old.querySelector('.think-text');
-          let prevTop = oldBox ? oldBox.scrollTop : null;
+          const prevTop = oldBox ? oldBox.scrollTop : null;
           const el = messageNode(msg);
           // A live thinking box is kept, not rebuilt: a new element would drop the reader's
           // scroll mid-gesture, so they could never scroll back down to the latest text.
@@ -523,20 +571,24 @@
       if (nearBottom) scrollToBottom();
     });
   }
-  function isNearBottom() {
-    const sc = app.classList.contains('fixed') ? $('scroller') : document.scrollingElement;
-    return sc.scrollHeight - sc.scrollTop - sc.clientHeight < 120;
-  }
-  function scrollToBottom() {
-    const sc = app.classList.contains('fixed') ? $('scroller') : document.scrollingElement;
-    sc.scrollTop = sc.scrollHeight;
-  }
+  const page = () => document.scrollingElement || document.documentElement;
+  function isNearBottom() { const sc = page(); return sc.scrollHeight - sc.scrollTop - sc.clientHeight < 160; }
+  function scrollToBottom() { const sc = page(); sc.scrollTop = sc.scrollHeight; }
 
-  // ------------------------------------------------------------------ tool feed
-  const STATUS = {
-    ok: ['OK', ''], cached: ['Cached', ''], running: ['Running', 'run'], blocked: ['Blocked', 'bad'],
-    refused: ['Refused', 'bad'], error: ['Error', 'warn'], stopped: ['Stopped', 'run'],
+  // ------------------------------------------------------------------ tool feed (sidebar tab)
+  const STATUS = { ok: 'OK', cached: 'Cached', running: 'Running', blocked: 'Blocked', refused: 'Refused', error: 'Error', stopped: 'Stopped' };
+  const isWebTool = (name) => {
+    const t = (tools.list || []).find((x) => x.name === name);
+    return t ? !!t.web : name === 'web_search' || name === 'fetch_url';
   };
+  // in: stayed on this box · out: went to the public web · flag: went through with a warning · bad: blocked or failed
+  function callKind(ev) {
+    if (ev.status === 'running' || ev.status === 'stopped') return 'run';
+    if (ev.status === 'blocked' || ev.status === 'refused' || ev.status === 'error') return 'bad';
+    const f = ev.feed || {};
+    if (ev.warning || f.tone === 'warn' || f.tone === 'bad') return 'flag';
+    return ev.lookup || isWebTool(ev.tool) ? 'out' : 'in';
+  }
 
   function feedDetail(ev) {
     if (ev.status === 'running') return 'running…';
@@ -549,100 +601,100 @@
     return parts.join(' · ');
   }
 
-  // Details: a tool's own readable sections (run_code: code, stdin, stdout, stderr), then the raw text
-  // sent to the model; without sections, the raw arguments and result as before.
-  function feedDetails(ev, argsText) {
+  // Details: a tool's own readable sections (run_code: code, stdin, stdout, stderr), else the arguments
+  // the model sent; then the text returned to the model, with the untrusted-content markers coloured.
+  function callDetails(ev, kind) {
     const f = ev.feed || {};
+    const out = [];
+    if (ev.reason && kind === 'bad') out.push(h('p', { class: 'call-note bad', text: ev.reason }));
+    if (ev.warning) out.push(h('p', { class: 'call-note flag', text: ev.warning }));
+    if (f.headline) out.push(h('p', { class: 'call-headline', text: f.headline }));
     if (f.sections && f.sections.length) {
-      return h('details', { class: 'f-more' },
-        h('summary', {}, 'Details'),
-        ...f.sections.map((s) => [h('h4', { text: s.title }), h('pre', { class: 'f-code' }, s.text)]),
-        ev.result ? h('details', { class: 'f-raw' },
-          h('summary', {}, 'Raw text returned to the model'), h('pre', {}, ev.result)) : null);
+      for (const s of f.sections) out.push(h('span', { class: 'call-h', text: s.title }), h('pre', { class: 'call-pre' }, highlight(s.text, s.language)));
+    } else {
+      const args = typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args || {}, null, 2);
+      out.push(h('span', { class: 'call-h', text: 'Arguments the model sent' }), h('pre', { class: 'call-pre' }, highlight(args, 'json')));
     }
-    return h('details', { class: 'f-more' },
-      h('summary', {}, 'Details'),
-      h('h4', { text: 'Arguments the model sent' }), h('pre', {}, argsText || '{}'),
-      ev.result ? [h('h4', { text: 'Returned to the model' }), h('pre', {}, ev.result)] : null);
+    if (ev.result) out.push(h('span', { class: 'call-h', text: 'Returned to the model' }), h('pre', { class: 'call-pre' }, highlight(ev.result, 'res')));
+    return h('div', { class: 'call-more' }, out);
   }
 
-  function feedCard(ev) {
+  function callRow(ev) {
     const f = ev.feed || {};
-    // the tool's own badge ("Program failed") when the call itself went through
-    let [label, tone] = STATUS[ev.status] || [ev.status, ''];
-    if (ev.status === 'ok' && f.pill) [label, tone] = [f.pill, f.tone || ''];
-    const bad = ev.status === 'blocked' || ev.status === 'refused';
-    const ic = ev.tool === 'web_search' ? 'search' : ev.tool === 'fetch_url' ? 'fetch' : 'tool';
-    const argsText = typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args, null, 2);
-    return h('div', { class: 'fcard' + (bad ? ' bad' : '') + (ui.freshFeed.has(ev.id) ? ' fresh' : ''), 'data-ev': ev.id },
-      h('div', { class: 'f-top' },
-        h('span', { class: 'f-icon' }, icon(ic)),
-        h('span', { class: 'f-tool', text: ev.tool }),
-        h('span', { class: 'f-time', text: clock(ev.started) })),
-      h('div', { class: 'f-arg', text: f.summary || ev.summary || '' }),
-      f.headline ? h('div', { class: 'f-headline' + (tone ? ' ' + tone : ''), text: f.headline }) : null,
-      ev.reason && ev.status !== 'ok' && ev.status !== 'cached' ? h('div', { class: 'f-reason', text: ev.reason }) : null,
-      ev.warning ? h('div', { class: 'f-warning' }, icon('flag'), h('span', { text: ev.warning })) : null,
-      h('div', { class: 'f-foot' },
-        h('span', { class: 'chip' + (tone ? ' ' + tone : ''), text: label }),
-        h('span', { class: 'f-detail', text: feedDetail(ev) })),
-      ev.status !== 'running' ? feedDetails(ev, argsText) : null);
+    const kind = callKind(ev);
+    const label = ev.status === 'ok' && f.pill ? f.pill : STATUS[ev.status] || ev.status;
+    const open = ui.callOpen.has(ev.id);
+    const markName = { in: 'mark-in', out: 'mark-out', flag: 'mark-flag', bad: 'mark-bad', run: 'mark-run' }[kind];
+    return h('li', { class: 'call', 'data-ev': ev.id },
+      h('button', { type: 'button', class: 'call-btn', 'aria-expanded': String(open),
+        onclick: () => { open ? ui.callOpen.delete(ev.id) : ui.callOpen.add(ev.id); renderFeed(); } },
+      h('span', { class: 'call-mark ' + kind, title: { in: 'Stayed on this box', out: 'Went to the public web', flag: 'Flagged', bad: 'Blocked or failed', run: 'Running' }[kind] }, icon(markName)),
+      h('span', { class: 'call-body' },
+        h('span', { class: 'call-top' }, h('span', { class: 'call-tool mono', text: ev.tool }), h('span', { class: 'call-time', text: ev.started ? clock(ev.started) : '' })),
+        h('span', { class: 'call-sum', text: f.summary || ev.summary || '' }),
+        h('span', { class: 'call-foot' },
+          h('span', { class: 'chip ' + (kind === 'run' ? '' : kind), text: label }),
+          h('span', { class: 'call-dest', text: feedDetail(ev) })))),
+      open && ev.status !== 'running' ? callDetails(ev, kind) : null);
+  }
+
+  function groupPills(evs) {
+    const n = { ok: 0, flag: 0, bad: 0, run: 0 };
+    for (const e of evs) { const k = callKind(e); n[k === 'in' || k === 'out' ? 'ok' : k]++; }
+    const pills = [h('span', { class: 'tpill calls', text: plural(evs.length, 'call') })];
+    const add = (k, word) => { if (n[k]) pills.push(h('span', { class: 'tpill ' + k, title: `${n[k]} ${word}`, 'aria-label': `${n[k]} ${word}`, text: String(n[k]) })); };
+    add('ok', 'succeeded'); add('flag', 'flagged'); add('bad', 'failed'); add('run', 'running');
+    return pills;
   }
 
   function renderFeed() {
-    const visible = ui.feedOpen && ui.view === 'chat';
-    $('feed').hidden = !visible;
-    relayout();
-    if (!visible) return;
+    if (ui.sideTab !== 'feed') return;
     const c = active();
-    const all = (c && c.feed) || [];
-    const cleared = (c && ui.feedCleared[c.id]) || 0;     // Clear only hides; the chat and export keep everything
-    const events = all.filter((e) => e.id > cleared);
-    $('feed-count').textContent = String(events.length);
-    // lookups in the latest answer
+    const events = (c && c.feed) || [];
     const lastTurn = events.reduce((n, e) => Math.max(n, e.turn), 0);
     const used = events.filter((e) => e.turn === lastTurn && e.lookup).length;
     const lastMsg = c && [...c.messages].reverse().find((m) => m.role === 'assistant');
-    const limit = (lastMsg && lastMsg.limit) || (ui.server ? ui.server.depths[settings().depth] : 20);
+    const limit = (lastMsg && lastMsg.limit) || (ui.server ? ui.server.depths[settings().depth] : 20) || 20;
     $('lookups-label').textContent = events.length ? `${used} of ${limit} lookups in the last answer` : 'No lookups yet';
     $('lookups-fill').style.width = Math.min(100, Math.round((used / limit) * 100)) + '%';
     const bar = $('lookups-bar');
     bar.setAttribute('aria-valuemax', String(limit));
     bar.setAttribute('aria-valuenow', String(used));
     const list = $('feed-list');
-    const openIds = new Set([...list.querySelectorAll('details.f-more[open]')].map((d) => d.closest('[data-ev]').dataset.ev));
-    const hidden = all.length - events.length;
-    $('clear-feed').hidden = !events.length;
-    if (!events.length) {
-      list.replaceChildren(h('p', { class: 'feed-empty' },
-        hidden ? `Cleared ${hidden} tool call${hidden === 1 ? '' : 's'}. ` : 'No tool calls yet.',
-        hidden ? h('button', { type: 'button', class: 'link-btn', onclick: () => setCleared(c, 0) }, 'Show them') : null));
-      return;
-    }
+    if (!events.length) { list.replaceChildren(h('p', { class: 'feed-empty', text: 'No tool calls in this chat yet.' })); return; }
     // One group per question. The current question stays open; earlier ones fold up as soon as a new
     // question is sent (its number is on the answer the server created), and open again on a click.
     const current = Math.max(lastTurn, currentTurn(c));
     const turns = [...new Set(events.map((e) => e.turn))].sort((a, b) => b - a);
     const opened = ui.feedOpenTurns[c.id] || (ui.feedOpenTurns[c.id] = new Set());
-    const card = (ev) => {
-      const el = feedCard(ev);
-      if (openIds.has(String(ev.id))) { const d = el.querySelector('details'); if (d) d.open = true; }
-      return el;
-    };
+    const shut = ui.feedShutTurns[c.id] || (ui.feedShutTurns[c.id] = new Set());
     list.replaceChildren(...turns.map((t) => {
       const evs = events.filter((e) => e.turn === t).reverse();
-      if (t === current) return h('div', { class: 'fgroup-now' }, ...evs.map(card));
-      const open = opened.has(t);
-      const bad = evs.filter((e) => e.status === 'blocked' || e.status === 'refused' || e.status === 'error').length;
-      const q = questionFor(c, t);
-      return h('div', { class: 'fgroup' + (open ? ' open' : '') },
-        h('button', { type: 'button', class: 'fgroup-head', 'aria-expanded': String(open),
-          onclick: () => { open ? opened.delete(t) : opened.add(t); renderFeed(); } },
-          h('span', { class: 'fgroup-q', text: q || 'Earlier question' }),
-          h('span', { class: 'fgroup-n', text: `${evs.length} call${evs.length === 1 ? '' : 's'}` + (bad ? ` · ${bad} not OK` : '') }),
-          (() => { const ch = icon('chevron'); ch.classList.add('chev'); return ch; })()),
-        open ? h('div', { class: 'fgroup-body' }, ...evs.map(card)) : null);
+      const open = t === current ? !shut.has(t) : opened.has(t);
+      const flip = () => {
+        const set = t === current ? shut : opened;
+        if ((t === current) === open) set.add(t); else set.delete(t);
+        renderFeed();
+      };
+      return h('section', { class: 'fgroup' + (open ? ' open' : ''), 'data-turn': t },
+        h('button', { type: 'button', class: 'fgroup-head', 'aria-expanded': String(open), onclick: flip },
+          h('span', { class: 'fgroup-text' },
+            h('span', { class: 'fgroup-q', text: questionFor(c, t) || 'Earlier question' }),
+            h('span', { class: 'fgroup-pills' }, groupPills(evs))),
+          withClass(icon('chevron'), 'chev')),
+        open ? h('ul', { class: 'call-list' }, evs.map(callRow)) : null);
     }));
+  }
+
+  // "N tool calls" under an answer: open the feed tab at that question's group.
+  function showCalls(turn) {
+    const c = active();
+    if (!c) return;
+    (ui.feedOpenTurns[c.id] || (ui.feedOpenTurns[c.id] = new Set())).add(turn);
+    if (ui.feedShutTurns[c.id]) ui.feedShutTurns[c.id].delete(turn);
+    setSideTab('feed');
+    const g = $('feed-list').querySelector(`[data-turn="${turn}"]`);
+    if (g) g.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
   // The question number of the answer running (or last run) in this chat: tool calls of earlier
@@ -656,50 +708,72 @@
     const u = i > 0 && c.messages[i - 1].role === 'user' ? c.messages[i - 1].text : '';
     return u.replace(/\s+/g, ' ').trim().slice(0, 80);
   }
-  function setCleared(c, upTo) {
-    if (upTo) ui.feedCleared[c.id] = upTo; else delete ui.feedCleared[c.id];
-    store.set('feedCleared', ui.feedCleared);
-    renderFeed();
-  }
-  function clearFeed() {
-    const c = active();
-    if (!c || !c.feed || !c.feed.length) return;
-    setCleared(c, c.feed.reduce((n, e) => Math.max(n, e.id), 0));
-  }
 
   function upsertEvent(chat, ev) {
     const i = chat.feed.findIndex((e) => e.id === ev.id);
-    if (i >= 0) chat.feed[i] = ev; else { chat.feed.push(ev); ui.freshFeed.add(ev.id); setTimeout(() => ui.freshFeed.delete(ev.id), 800); }
+    if (i >= 0) chat.feed[i] = ev; else chat.feed.push(ev);
   }
 
-  // ------------------------------------------------------------------ composer
+  // ------------------------------------------------------------------ message box
   const composer = $('composer');
   function autosize() {
     composer.style.height = 'auto';
-    composer.style.height = Math.min(240, composer.scrollHeight) + 'px';
+    composer.style.height = Math.max(118, Math.min(240, composer.scrollHeight + 2)) + 'px';
   }
   function renderComposer() {
     const c = active();
-    const streaming = !!(c && ui.streams[c.id]);
-    const busy = !!(c && c.busy) || streaming;
+    const busy = !!(c && (c.busy || ui.streams[c.id]));
     const send = $('send');
     send.classList.toggle('stop', busy);
-    send.classList.toggle('ready', !busy && !!(composer.value.trim() || ui.attachments.length));
     send.setAttribute('aria-label', busy ? 'Stop answering' : 'Send message');
+    send.title = busy ? 'Stop answering' : 'Send message';
     const close = $('closeout');
     close.hidden = !busy;
-    if (busy && c && ui.closing[c.id]) {
-      close.disabled = true;
-      close.replaceChildren(h('span', { class: 'co-long' }, 'Writing final answer'), '…');
-    } else {
-      close.disabled = false;
-      close.textContent = 'Close out';
-    }
-    const atts = $('attachments');
-    atts.hidden = !ui.attachments.length;
-    atts.replaceChildren(...ui.attachments.map((a, i) => h('span', { class: 'att', title: a.name }, icon('file'),
-      h('span', { class: 'att-name', text: a.name }), h('span', { class: 'att-size', text: `(${fileSize(a.size)})` }),
+    const wrapping = busy && c && ui.closing[c.id];
+    close.disabled = !!wrapping;
+    close.textContent = wrapping ? 'Writing final answer…' : 'Close out';
+    $('attachments').replaceChildren(...ui.attachments.map((a, i) => h('span', { class: 'att', title: a.name },
+      h('span', { class: 'att-name', text: a.name }), h('span', { class: 'att-size', text: fileSize(a.size) }),
       h('button', { type: 'button', 'aria-label': 'Remove ' + a.name, onclick: () => { ui.attachments.splice(i, 1); renderComposer(); } }, icon('x')))));
+    $('top-row').hidden = !busy && !ui.attachments.length;
+    renderQbar();
+  }
+
+  // The bar under the message box: web on/off, system prompt, thinking, and the chat settings gear.
+  function renderQbar() {
+    const s = settings();
+    const web = $('q-web');
+    web.setAttribute('aria-pressed', String(!!s.internet));
+    $('q-web-label').textContent = s.internet ? 'Web on' : 'Web off';
+    web.title = s.internet ? 'Web access is on: Perseus may search and read public pages' : 'Web access is off';
+    $('q-persona-label').textContent = cap(s.persona || 'researcher');
+    $('q-think-wrap').hidden = !info().thinks;
+    $('q-think-label').textContent = cap(THINK[s.thinking] ? s.thinking : 'medium') + ' thinking';
+    for (const [name, wrap] of [['persona', 'q-persona'], ['think', 'q-think']]) {
+      const open = ui.menu === name;
+      $(wrap).setAttribute('aria-expanded', String(open));
+      const menu = $(wrap + '-menu');
+      menu.hidden = !open;
+      if (!open) continue;
+      if (name === 'persona') {
+        const order = PERSONA_ORDER.filter((p) => (ui.server.personas || []).includes(p));
+        menu.replaceChildren(...order.map((p) => menuItem(cap(p), PERSONA_SHORT[p], s.persona === p, () => patchSettings({ persona: p }))));
+      } else {
+        menu.replaceChildren(...Object.keys(THINK).filter((l) => (ui.server.thinking || []).includes(l)).map((l) =>
+          menuItem(cap(l), THINK[l][1] ? `Up to ${THINK[l][0]} reasoning tokens.` : 'No reasoning limit.', s.thinking === l, () => patchSettings({ thinking: l }))));
+      }
+    }
+  }
+  function menuItem(label, sub, on, onPick) {
+    const pick = onPick;
+    return h('button', { type: 'button', role: 'menuitemradio', class: 'menu-item', 'aria-checked': String(on),
+      onclick: () => { ui.menu = null; pick(); } }, h('b', { text: label }), sub ? h('span', { text: sub }) : null);
+  }
+  function toggleMenu(name, e) {
+    e.stopPropagation();
+    ui.menu = ui.menu === name ? null : name;
+    renderQbar();
+    if (ui.menu) { const first = $('q-' + name + '-menu').querySelector('[aria-checked="true"]') || $('q-' + name + '-menu').firstChild; if (first) first.focus(); }
   }
 
   function banner(text) {
@@ -746,6 +820,7 @@
     renderComposer();
     let current = null;
     let finished = false;
+    const here = () => chat.id === ui.activeId && ui.view === 'chat';
     try {
       const r = await fetch(`/api/chats/${chat.id}/messages`, {
         method: 'POST', credentials: 'same-origin', signal: controller.signal,
@@ -777,7 +852,7 @@
             const row = ui.list.find((x) => x.id === chat.id);
             if (row) { row.title = chat.title; row.busy = true; }
             delete ui.feedOpenTurns[chat.id];       // a new question folds up every earlier one
-            if (chat.id === ui.activeId) { renderMessages(); renderHeader(); renderFeed(); scrollToBottom(); }
+            if (here()) { renderMessages(); renderHeader(); renderFeed(); scrollToBottom(); }
             renderChatList();
           } else if (ev.type === 'text' && current) {
             if (current.phase !== 'closing') current.phase = ev.thought ? 'thinking' : 'answering';
@@ -786,7 +861,7 @@
               if (!current.content && current.reasoning && current.think_secs == null) current.think_secs = (Date.now() / 1000) - current.started;
               current.content += ev.text;
             }
-            if (chat.id === ui.activeId) replaceMessage(current);
+            if (here()) replaceMessage(current);
           } else if (ev.type === 'retract' && current) {
             // text shown as answer that turned out to be thinking: move it into the thinking box
             if (current.content.endsWith(ev.text)) current.content = current.content.slice(0, current.content.length - ev.text.length);
@@ -794,14 +869,14 @@
             current.reasoning += ev.text;
             if (ev.think_used != null) current.think_used = ev.think_used;
             if (current.phase !== 'closing') current.phase = 'thinking';
-            if (chat.id === ui.activeId) replaceMessage(current);
+            if (here()) replaceMessage(current);
           } else if (ev.type === 'phase' && current) {
             current.phase = ev.phase;
-            if (chat.id === ui.activeId) replaceMessage(current);
+            if (here()) replaceMessage(current);
           } else if (ev.type === 'file' && current) {
             current.files = current.files || [];
             if (!current.files.some((f) => f.id === ev.file.id)) current.files.push(ev.file);
-            if (chat.id === ui.activeId) replaceMessage(current);
+            if (here()) replaceMessage(current);
           } else if (ev.type === 'tool') {
             upsertEvent(chat, ev.event);
             if (chat.id === ui.activeId) renderFeed();
@@ -811,7 +886,8 @@
             if (i >= 0) chat.messages[i] = ev.message;
             if (ev.context_used) chat.ctxUsed = ev.context_used;
             current = ev.message;
-            if (chat.id === ui.activeId) { replaceMessage(current); renderRing(); renderFeed(); }
+            if (here()) { replaceMessage(current); renderContext(); }
+            if (chat.id === ui.activeId) renderFeed();
           }
         }
       }
@@ -836,6 +912,7 @@
       full.ctxUsed = keep ? keep.ctxUsed : 0;
       const lastAi = [...full.messages].reverse().find((m) => m.role === 'assistant' && m.usage && m.usage.prompt_tokens);
       if (lastAi) full.ctxUsed = (lastAi.usage.prompt_tokens || 0) + (lastAi.usage.completion_tokens || 0);
+      full.feed = full.feed || [];
       ui.chats[id] = full;
       if (id === ui.activeId) renderAll();
       if (full.busy && !ui.streams[id]) setTimeout(() => reloadChat(id), 1500);
@@ -860,28 +937,27 @@
   async function createChat() {
     const full = await api('POST', '/api/chats');
     full.ctxUsed = 0;
+    full.feed = full.feed || [];
     ui.chats[full.id] = full;
     ui.list.unshift({ id: full.id, title: full.title, busy: false, messages: 0 });
     ui.activeId = full.id;
+    store.set('active', full.id);
     renderChatList();
     return full;
   }
 
   async function newChat() {
-    ui.view = 'chat';
     const c = active();
     if (!c || c.messages.length) await createChat().catch((e) => banner(e.message));
-    renderAll();
+    if (ui.view !== 'chat') go('chat'); else renderAll();
     composer.focus();
   }
 
   async function openChat(id) {
-    ui.view = 'chat';
     ui.activeId = id;
     store.set('active', id);
     if (!ui.chats[id]) await reloadChat(id);
-    renderAll();
-    scrollToBottom();
+    if (ui.view !== 'chat') go('chat'); else { renderAll(); scrollToBottom(); }
   }
 
   async function deleteChat(id) {
@@ -894,17 +970,14 @@
   }
 
   let deleteArmed = null;
-  async function deleteAll() {
-    const btn = $('delete-all');
+  async function deleteAll(btn) {
     if (!deleteArmed) {
       btn.classList.add('confirm');
-      $('delete-all-label').textContent = 'Click again to delete all';
-      deleteArmed = setTimeout(() => { deleteArmed = null; btn.classList.remove('confirm'); $('delete-all-label').textContent = 'Delete all chats'; }, 4000);
+      btn.textContent = 'Press again to delete all';
+      deleteArmed = setTimeout(() => { deleteArmed = null; btn.classList.remove('confirm'); btn.textContent = 'Delete all'; }, 4000);
       return;
     }
     clearTimeout(deleteArmed); deleteArmed = null;
-    btn.classList.remove('confirm');
-    $('delete-all-label').textContent = 'Delete all chats';
     try { await api('DELETE', '/api/chats'); } catch (e) { banner(e.message); return; }
     ui.list = []; ui.chats = {}; ui.activeId = null;
     renderAll();
@@ -916,110 +989,142 @@
       const r = await api('PATCH', '/api/settings', patch);
       ui.server.settings = r.settings;
     } catch (e) { banner(e.message); }
-    renderToggles(); renderHeader(); renderSettings(); renderFeed();
+    renderQbar(); renderSettings(); renderChatSettings(); renderFeed();
   }
 
-  function optBtn(label, on, pick, extra) {
-    return h('button', { type: 'button', class: 'opt' + (extra && extra.cls ? ' ' + extra.cls : ''), 'aria-pressed': String(on),
-      disabled: extra && extra.disabled, title: extra && extra.title, onclick: pick }, ...(extra && extra.kids ? extra.kids : [label]));
+  function seg(label, options) {
+    return h('div', { class: 'seg', role: 'group', 'aria-label': label }, options.map((o) =>
+      h('button', { type: 'button', 'aria-pressed': String(!!o.on), disabled: o.disabled, title: o.title, onclick: o.pick },
+        o.icon ? icon(o.icon) : null, o.label)));
   }
 
-  function currentModel() {
-    const s = settings();
-    const cur = (ui.server.context_options.find((o) => o.current) || {}).id;
-    return { context: cur, creativity: s.creativity, length: s.length };
+  const appliedContext = () => (ui.server.context_options.find((o) => o.current) || {}).id;
+
+  // One box per setting: bold title, a short light description beside it, then the control.
+  // The Settings page and the Chat settings dialog build theirs from the same list.
+  const BOXES = {
+    appearance: ['Dashboard Appearance', 'Light or dark theme.', () => seg('Theme', [
+      { label: 'Light', icon: 'sun', on: ui.theme !== 'dark', pick: () => setTheme('light') },
+      { label: 'Dark', icon: 'moon', on: ui.theme === 'dark', pick: () => setTheme('dark') }])],
+    context: ['Chat Context Window', 'Alter the context window.', () => {
+      const pend = (ui.pending && ui.pending.context) || appliedContext();
+      return seg('Context window', ui.server.context_options.map((o) => ({ label: o.label, on: pend === o.id, disabled: !o.available,
+        title: o.available ? `${o.tokens.toLocaleString()} tokens · takes effect after a restart` : `Doesn't fit on this box (up to ${info().capacity.toLocaleString()} tokens)`,
+        pick: () => setPending(o.id) })));
+    }],
+    length: ['Answer Output Length', 'Change the verbosity of the output.', () => seg('Answer output length',
+      ui.server.length.map((l) => ({ label: cap(l), on: settings().length === l, pick: () => patchSettings({ length: l }) })))],
+    thinking: ['Thinking Complexity', 'Change the token maximum of reasoning.', () => seg('Thinking complexity',
+      Object.keys(THINK).filter((l) => ui.server.thinking.includes(l)).map((l) => ({ label: THINK[l][0], on: settings().thinking === l,
+        title: cap(l), disabled: !info().thinks, pick: () => patchSettings({ thinking: l }) })))],
+    creativity: ['Creativity', 'Alter temperature of thinking freedom.', () => seg('Creativity',
+      ui.server.creativity.map((c) => ({ label: cap(c), on: settings().creativity === c, pick: () => patchSettings({ creativity: c }) })))],
+    web: ['Web Access', 'Allow the agent access to the internet.', () => seg('Web access', [
+      { label: 'On', on: !!settings().internet, pick: () => patchSettings({ internet: true }) },
+      { label: 'Off', on: !settings().internet, pick: () => patchSettings({ internet: false }) }])],
+    depth: ['Web Research Depth', 'Change maximum web lookups per answer.', () => seg('Web research depth',
+      Object.entries(ui.server.depths).map(([id, n]) => ({ label: `${cap(id)} · ${n}`, on: settings().depth === id, pick: () => patchSettings({ depth: id }) })))],
+    engines: ['Search engines', 'Search interfaces Perseus attempts to use.', () => h('div', { class: 'engines' },
+      Object.entries(settings().engines || {}).map(([id, on]) => h('button', { type: 'button', role: 'checkbox', class: 'check', 'aria-checked': String(on),
+        onclick: () => patchSettings({ engines: { [id]: !on } }) }, h('span', { class: 'check-box', 'aria-hidden': 'true' }, icon('check')), ENGINE_NAMES[id] || id))), true],
+    persona: ['System Prompt', "Perseus's model will assume this role to better tailor answers.", (where) => {
+      const s = settings();
+      const order = PERSONA_ORDER.filter((p) => (ui.server.personas || []).includes(p));
+      return [h('div', { class: 'persona-grid', role: 'group', 'aria-label': 'System prompt' }, order.map((p) =>
+        h('button', { type: 'button', class: 'persona', 'aria-pressed': String(s.persona === p), onclick: () => patchSettings({ persona: p }) },
+          icon(PERSONA_ICON[p] || 'pen'), cap(p)))),
+      s.persona === 'custom' ? customEditor(where) : null];
+    }, true],
+    history: ['Chat History', 'Export to another session or clear history.', () => [
+      h('a', { class: 'btn', href: '/api/export', download: 'perseus-chats.json' }, icon('download'), 'Export'),
+      h('button', { type: 'button', class: 'btn btn-danger', onclick: (e) => deleteAll(e.currentTarget) }, 'Delete all')]],
+  };
+  const PAGE_BOXES = ['appearance', 'context', 'length', 'thinking', 'creativity', 'web', 'depth', 'engines', 'persona', 'history'];
+  const CHAT_BOXES = ['web', 'thinking', 'persona', 'depth', 'engines', 'creativity', 'length'];
+
+  function settingBox(key, where) {
+    const [title, desc, make, wide] = BOXES[key];
+    const build = make;
+    const id = `${where}-${key}`;
+    return h('section', { class: 'setting', 'aria-labelledby': id },
+      h('div', { class: 'set-head' }, h(where === 'page' ? 'h2' : 'h3', { id, text: title }), h('p', { text: desc })),
+      h('div', { class: 'set-ctl' + (wide ? ' wide' : '') }, build(where)));
   }
+
+  // The custom prompt keeps its own element while you type: settings re-render around it, never through it.
+  const editors = {};
+  let customTimer = null;
+  function customEditor(where) {
+    let ed = editors[where];
+    if (!ed) {
+      const ta = h('textarea', { maxlength: String(CUSTOM_MAX), 'aria-label': 'Custom system prompt', placeholder: 'Perseus is your follower, tell him how to think' });
+      const left = h('span', { class: 'char-pill', 'aria-live': 'polite' });
+      ta.addEventListener('input', () => {
+        left.textContent = `${(CUSTOM_MAX - ta.value.length).toLocaleString()} characters left`;
+        clearTimeout(customTimer);
+        customTimer = setTimeout(async () => {
+          try { const r = await api('PATCH', '/api/settings', { custom_prompt: ta.value }); ui.server.settings = r.settings; } catch (e) { banner(e.message); }
+        }, 600);
+      });
+      ed = editors[where] = { wrap: h('div', { class: 'custom-wrap' }, ta, left), ta, left };
+    }
+    if (document.activeElement !== ed.ta) ed.ta.value = settings().custom_prompt || '';
+    ed.left.textContent = `${(CUSTOM_MAX - ed.ta.value.length).toLocaleString()} characters left`;
+    return ed.wrap;
+  }
+  const typingIn = (el) => el.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA';
 
   function renderSettings() {
     if (!ui.server || ui.view !== 'settings') return;
-    const s = settings();
+    if (!typingIn($('settings-list'))) $('settings-list').replaceChildren(...PAGE_BOXES.map((k) => settingBox(k, 'page')));
     const inf = info();
-    $('fact-model').textContent = inf.model;
-    $('fact-gpus').textContent = inf.hardware;
-    $('fact-precision').textContent = inf.precision;
-
-    const personaIcon = { engineer: 'code', planner: 'plan', researcher: 'research', custom: 'pen' };
-    $('personas').replaceChildren(...ui.server.personas.map((p) => optBtn(cap(p), s.persona === p, () => patchSettings({ persona: p }),
-      { cls: 'persona', kids: [icon(personaIcon[p] || 'pen'), h('span', { text: cap(p) })] })));
-    $('custom-wrap').hidden = s.persona !== 'custom';
-    const cp = $('custom-prompt');
-    if (document.activeElement !== cp) cp.value = s.custom_prompt || '';
-
-    const applied = currentModel();
-    const pend = ui.pending || applied;
-    $('context-opts').replaceChildren(...ui.server.context_options.map((o) => optBtn(o.label, pend.context === o.id,
-      () => setPending({ context: o.id }),
-      { disabled: !o.available, title: o.available ? `${o.tokens.toLocaleString()} tokens` : `Doesn't fit on this box (up to ${info().capacity.toLocaleString()} tokens)` })));
-    $('creativity-opts').replaceChildren(...ui.server.creativity.map((c) => optBtn(cap(c), pend.creativity === c, () => setPending({ creativity: c }))));
-    $('length-opts').replaceChildren(...ui.server.length.map((l) => optBtn(cap(l), pend.length === l, () => setPending({ length: l }))));
-
-    $('depths').replaceChildren(...Object.entries(ui.server.depths).map(([id, n]) => optBtn(cap(id), s.depth === id,
-      () => patchSettings({ depth: id }), { cls: 'depth', kids: [h('span', { class: 'd-label', text: cap(id) }), h('span', { class: 'd-sub', text: `${n} lookups` })] })));
-
-    const ENGINE_NAMES = { duckduckgo: 'DuckDuckGo', wikipedia: 'Wikipedia', github: 'GitHub', arxiv: 'arXiv', stackoverflow: 'Stack Overflow', mojeek: 'Mojeek', google: 'Google', bing: 'Bing', brave: 'Brave', startpage: 'Startpage', qwant: 'Qwant' };
-    $('engines').replaceChildren(...Object.entries(s.engines || {}).map(([id, on]) => h('button', {
-      type: 'button', role: 'checkbox', class: 'check', 'aria-checked': String(on),
-      onclick: () => patchSettings({ engines: { [id]: !on } }),
-    }, h('span', { class: 'check-box', 'aria-hidden': 'true' }, icon('check')), ENGINE_NAMES[id] || id)));
-
-    // pending changes + apply
-    const names = (list, id) => { const o = list.find((x) => x.id === id); return o ? o.label : cap(String(id)); };
-    const changes = [];
-    if (pend.context !== applied.context) changes.push(`Memory ${names(ui.server.context_options, applied.context)} → ${names(ui.server.context_options, pend.context)}`);
-    if (pend.creativity !== applied.creativity) changes.push(`Creativity ${cap(applied.creativity)} → ${cap(pend.creativity)}`);
-    if (pend.length !== applied.length) changes.push(`Answer length ${cap(applied.length)} → ${cap(pend.length)}`);
-    const restarting = !!ui.server.restarting;
-    $('pending-label').textContent = changes.length === 0 ? 'No pending changes'
-      : changes.length === 1 ? '1 change waiting to be applied' : `${changes.length} changes waiting to be applied`;
-    $('pending-summary').hidden = !changes.length;
-    $('pending-summary').textContent = changes.join(' · ');
-    $('discard').hidden = !changes.length;
-    $('discard').disabled = restarting;
-    const needsRestart = pend.context !== applied.context || !changes.length;
-    $('apply-label').textContent = restarting ? 'Restarting…' : (changes.length ? (needsRestart ? 'Apply & restart' : 'Apply') : 'Restart model');
-    $('apply').disabled = restarting;
-    if (inf.last_restart_error && !changes.length) {
-      $('pending-summary').hidden = false;
-      $('pending-summary').textContent = 'Last restart failed: ' + inf.last_restart_error;
-    }
+    $('model-pills').replaceChildren(...[['Model', inf.model], ['GPUs', inf.hardware], ['Precision', inf.precision]].map(([k, v]) =>
+      h('span', { class: 'model-pill', title: `${k}: ${v}` }, h('span', { class: 'k', text: k }), h('span', { class: 'v', text: v || '—' }))));
+    renderServerBar();
   }
 
-  function setPending(patch) {
-    ui.pending = { ...(ui.pending || currentModel()), ...patch };
-    const a = currentModel();
-    if (ui.pending.context === a.context && ui.pending.creativity === a.creativity && ui.pending.length === a.length) ui.pending = null;
+  function renderServerBar() {
+    const restarting = !!ui.server.restarting;
+    const label = (id) => { const o = ui.server.context_options.find((x) => x.id === id); return o ? o.label : String(id); };
+    const p = ui.pending;
+    $('pending-label').textContent = restarting ? 'Restarting the model…'
+      : p ? `Context window ${label(appliedContext())} → ${label(p.context)} takes effect after a restart.`
+      : info().last_restart_error ? 'Last restart failed: ' + info().last_restart_error
+      : 'No changes waiting for a restart.';
+    $('discard').hidden = !p;
+    $('discard').disabled = restarting;
+    $('apply-label').textContent = restarting ? 'Restarting…' : 'Restart model';
+    $('apply').disabled = restarting;
+  }
+
+  function setPending(context) {
+    ui.pending = context === appliedContext() ? null : { context };
     renderSettings();
   }
 
   async function applyModel() {
-    const a = currentModel();
-    const p = ui.pending || a;
-    const patch = {};
-    if (p.creativity !== a.creativity) patch.creativity = p.creativity;
-    if (p.length !== a.length) patch.length = p.length;
+    const target = (ui.pending && ui.pending.context) || appliedContext();
+    const tokens = (ui.server.context_options.find((o) => o.id === target) || {}).tokens || info().context;
     try {
-      if (Object.keys(patch).length) await patchSettings(patch);
-      const restart = p.context !== a.context || !ui.pending;
-      if (restart) {
-        const tokens = (ui.server.context_options.find((o) => o.id === p.context) || {}).tokens || info().context;
-        await api('POST', '/api/model/apply', { context: tokens });
-        ui.server.restarting = true;
-      }
+      await api('POST', '/api/model/apply', { context: tokens });
+      ui.server.restarting = true;
       ui.pending = null;
     } catch (e) { banner(e.message); }
     renderSettings(); renderStatus();
     pollSoon();
   }
 
-  let customTimer = null;
-  $('custom-prompt').addEventListener('input', (e) => {
-    clearTimeout(customTimer);
-    $('custom-saved').textContent = '';
-    customTimer = setTimeout(async () => {
-      await patchSettings({ custom_prompt: e.target.value });
-      $('custom-saved').textContent = 'Saved';
-    }, 600);
-  });
+  // ---- chat settings dialog (the gear under the message box)
+  function renderChatSettings() {
+    const dlg = $('chat-settings');
+    if (!dlg.open || !ui.server || typingIn($('cs-body'))) return;
+    $('cs-body').replaceChildren(...CHAT_BOXES.map((k) => settingBox(k, 'dlg')));
+  }
+  function openChatSettings() {
+    ui.menu = null; renderQbar();
+    $('chat-settings').showModal();
+    renderChatSettings();
+  }
 
   // ------------------------------------------------------------------ raw view
   async function openRaw(m) {
@@ -1033,7 +1138,7 @@
     dlg.showModal();
     try {
       const r = await api('GET', `/api/chats/${c.id}/raw/${encodeURIComponent(m.id)}`);
-      $('raw-prompt').textContent = r.prompt;
+      $('raw-prompt').replaceChildren(...highlight(r.prompt, 'tmpl'));
       $('raw-output').textContent = r.outputs.map((o) => {
         let s = `── step ${o.step} · ${o.finish_reason || '?'}\n`;
         if (o.reasoning) s += `[reasoning]\n${o.reasoning}\n`;
@@ -1044,306 +1149,89 @@
       const bits = [];
       if (r.prompt_tokens) bits.push(`${r.prompt_tokens.toLocaleString()} prompt tokens`);
       if (r.completion_tokens) bits.push(`${r.completion_tokens.toLocaleString()} output tokens`);
-      bits.push(`${r.steps} step${r.steps === 1 ? '' : 's'}`);
+      bits.push(plural(r.steps, 'step'));
       $('raw-tokens').textContent = bits.join(' · ');
       if (r.note) { $('raw-note').hidden = false; $('raw-note').textContent = r.note; }
     } catch (e) {
       $('raw-prompt').textContent = 'Not available: ' + e.message;
     }
   }
-  $('raw-close').addEventListener('click', () => $('raw').close());
-  $('raw').addEventListener('click', (e) => { if (e.target === $('raw')) $('raw').close(); });
 
-  // ------------------------------------------------------------------ development pipelines + tools (WIP)
-  // Read-only for now: pipelines are shown, not run. Data comes from /api/pipelines and /api/tools.
-  const dev = { pipelines: null, errors: [], tools: null, toolErrors: [], folder: 'perseus/pipelines', loading: false, error: null,
-                pid: store.get('pipeline', null), stage: {}, filter: '' };
-  const isDev = () => ui.view === 'pipelines' || ui.view === 'tools';
-  const TOOL_ICONS = { web_search: 'search', fetch_url: 'fetch', calculator: 'calc', current_time: 'clock',
-                       output_file: 'file', run_code: 'code' };
-  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  // ------------------------------------------------------------------ Agent Tools
+  // Read-only: what the model can call, grouped by where a call goes. Data from /api/tools.
+  const tools = { list: null, errors: [], loading: false, error: null, sel: store.get('tool', null), filter: '' };
+  const LANES = [
+    { id: 'box', title: 'On this box', sub: '', dot: 'in', test: (t) => !t.web && t.requires !== 'sandbox' },
+    { id: 'web', title: 'Public web', sub: 'read-only, through the gateway', dot: '', test: (t) => t.web && t.requires !== 'sandbox' },
+    { id: 'sandbox', title: 'Throwaway sandbox', sub: '', dot: 'in', test: (t) => t.requires === 'sandbox' },
+  ];
 
-  async function loadDev() {
-    if (dev.loading) return;
-    dev.loading = true; dev.error = null;
-    if (!dev.pipelines) renderDev();
+  async function loadTools() {
+    if (tools.loading) return;
+    tools.loading = true; tools.error = null;
+    if (!tools.list) renderTools();
     try {
-      const [p, t] = await Promise.all([api('GET', '/api/pipelines'), api('GET', '/api/tools')]);
-      dev.pipelines = p.pipelines; dev.errors = p.errors || []; dev.folder = p.folder || dev.folder; dev.tools = t.tools; dev.toolErrors = t.errors || [];
-    } catch (e) { dev.error = e.message; }
-    dev.loading = false;
-    renderDev(); renderNav();
+      const t = await api('GET', '/api/tools');
+      tools.list = t.tools; tools.errors = t.errors || [];
+    } catch (e) { tools.error = e.message; }
+    tools.loading = false;
+    renderTools(); renderNav();
   }
 
-  function openDev(view) {
-    hideTip();
-    ui.view = view; ui.menuOpen = false; ui.pending = null;
-    renderAll();
-    $('dev-view').scrollTop = 0;
-    loadDev();           // every visit: picks up pipeline and tool files added since
-  }
-
-  function renderNav() {
-    for (const id of ['nav-pipelines', 'nav-tools']) {
-      const b = $(id);
-      const on = ui.view === b.dataset.view;
-      b.classList.toggle('active', on);
-      if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
-    }
-    const n = dev.tools ? dev.tools.length : (ui.server && ui.server.tools ? ui.server.tools.length : null);
-    $('nav-tools-count').textContent = n == null ? '' : String(n);
-    $('nav-tools-count').setAttribute('aria-label', n == null ? '' : plural(n, 'agent function'));
-  }
-
-  // ---- tooltip: one shared element, on hover (short delay) and on keyboard focus; Escape closes it
-  const tip = h('div', { id: 'dev-tip', class: 'tip', role: 'tooltip', hidden: true });
-  app.append(tip);
-  let tipOwner = null, tipTimer = null;
-  function showTip(el) {
-    clearTimeout(tipTimer);
-    if (!el.isConnected) return;
-    tipOwner = el;
-    tip.replaceChildren(...[].concat(el._tip()));
-    tip.hidden = false;
-    el.setAttribute('aria-describedby', 'dev-tip');
-    const r = el.getBoundingClientRect(), w = tip.offsetWidth, th = tip.offsetHeight;
-    const below = r.top - th - 10 < 8;
-    const left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, window.innerWidth - w - 8));
-    tip.style.left = left + 'px';
-    tip.style.top = (below ? r.bottom + 10 : r.top - th - 10) + 'px';
-    tip.style.setProperty('--arrow-x', Math.max(14, Math.min(w - 14, r.left + r.width / 2 - left)) + 'px');
-    tip.classList.toggle('below', below);
-  }
-  function hideTip() {
-    clearTimeout(tipTimer);
-    if (tipOwner) tipOwner.removeAttribute('aria-describedby');
-    tipOwner = null; tip.hidden = true;
-  }
-  function withTip(el, build) {
-    el._tip = build;
-    el.addEventListener('mouseenter', () => { clearTimeout(tipTimer); tipTimer = setTimeout(() => showTip(el), 150); });
-    el.addEventListener('mouseleave', hideTip);
-    el.addEventListener('focus', () => showTip(el));
-    el.addEventListener('blur', hideTip);
-    return el;
-  }
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && tipOwner) hideTip(); });
-  let tipFrame = 0;   // follow the owner when the page scrolls (focusing an off-screen item scrolls it into view)
-  document.addEventListener('scroll', () => {
-    if (!tipOwner || tipFrame) return;
-    tipFrame = requestAnimationFrame(() => { tipFrame = 0; if (tipOwner) showTip(tipOwner); });
-  }, true);
-
-  function toolTip(name) {
-    const t = (dev.tools || []).find((x) => x.name === name);
-    if (!t) {
-      return [h('div', { class: 'tip-head' }, h('span', { class: 'tip-name mono', text: name }), h('span', { class: 'chip warn', text: 'Not installed' })),
-        h('p', { class: 'tip-desc', text: 'Not loaded: add it to perseus/tools/ or remove it from the pipeline.' })];
-    }
-    const out = [h('div', { class: 'tip-head' }, h('span', { class: 'tip-name mono', text: t.name }),
-      h('span', { class: 'chip' + (t.web ? '' : ' run'), text: t.web ? 'Web' : 'Local' })),
-      h('p', { class: 'tip-desc', text: t.description })];
-    if (t.params.length) {
-      out.push(h('div', { class: 'tip-sub', text: 'Arguments' }),
-        h('ul', { class: 'tip-params' }, t.params.map((p) => h('li', {},
-          h('span', { class: 'mono tip-param', text: p.name }), h('span', { class: 'tip-type', text: p.type + (p.required ? '' : ' · optional') }),
-          p.description ? h('span', { class: 'tip-pdesc', text: p.description }) : null))));
-    } else out.push(h('div', { class: 'tip-sub', text: 'Takes no arguments' }));
-    out.push(h('div', { class: 'tip-meta', text: `Times out after ${t.timeout_s} s` }));
-    return out;
-  }
-
-  function toolChip(name, missing) {
-    return withTip(h('button', { type: 'button', class: 'tool-chip mono' + (missing ? ' missing' : '') },
-      missing ? icon('alert') : null, name), () => toolTip(name));
-  }
-
-  // ---- shared states
-  function devState() {
-    if (dev.error && !dev.pipelines) {
-      return h('div', { class: 'dev-empty' }, h('p', { text: "Couldn't load development data: " + dev.error }),
-        h('button', { type: 'button', class: 'btn-secondary', onclick: loadDev }, 'Try again'));
-    }
-    return h('div', { class: 'dev-empty', 'aria-busy': 'true' }, h('div', { class: 'skeleton' }), h('div', { class: 'skeleton short' }));
-  }
-
-  function renderDev() {
-    if (!isDev()) return;
-    hideTip();
+  function renderTools() {
+    if (ui.view !== 'tools') return;
     const body = $('dev-body');
-    if (!dev.pipelines) { body.replaceChildren(devState()); return; }
-    body.replaceChildren(...(ui.view === 'tools' ? toolsPage() : pipelinesPage()));
-  }
-
-  // ---- pipelines page
-  function pipelinesPage() {
-    const out = [h('div', { class: 'callout' }, icon('info'), h('div', {},
-      h('strong', { text: 'Preview. ' }),
-      'Pipelines don’t run yet. Each stage is a role with its own prompt and tools; when it finishes, its work is handed to the next stage in a ',
-      h('strong', { text: 'new context window' }),
-      ', so review stages judge the work without seeing how it was made.'))];
-    for (const e of dev.errors) {
-      out.push(h('div', { class: 'callout warn', role: 'alert' }, icon('alert'),
-        h('div', {}, h('strong', { class: 'mono', text: e.file }), ' wasn’t loaded: ' + e.error)));
+    if (!tools.list) {
+      body.replaceChildren(tools.error
+        ? h('div', { class: 'dev-empty' }, h('p', { text: "Couldn't load the tools: " + tools.error }),
+          h('button', { type: 'button', class: 'btn', onclick: loadTools }, 'Try again'))
+        : h('div', { class: 'skeleton', 'aria-busy': 'true' }));
+      return;
     }
-    if (!dev.pipelines.length) {
-      out.push(h('div', { class: 'card dev-empty' }, h('h2', { text: 'No pipelines yet' }),
-        h('p', { class: 'hint', text: `Add a .toml file to ${dev.folder}/. The format is described at the top of ${dev.folder}/__init__.py.` })));
-      return out;
-    }
-    const pl = dev.pipelines.find((p) => p.id === dev.pid) || dev.pipelines[0];
-    const sel = pl.stages.find((s) => s.id === dev.stage[pl.id]) || pl.stages[0];
-
-    if (dev.pipelines.length > 1) {
-      const tabs = h('div', { class: 'dev-tabs', role: 'tablist', 'aria-label': 'Pipelines' },
-        dev.pipelines.map((p) => h('button', { type: 'button', role: 'tab', class: 'dev-tab', id: 'pl-tab-' + p.id,
-          'aria-selected': String(p.id === pl.id), 'aria-controls': 'pl-panel', tabindex: p.id === pl.id ? '0' : '-1',
-          onclick: () => { dev.pid = p.id; store.set('pipeline', p.id); renderDev(); } },
-        h('span', { class: 'dev-tab-name', text: p.name }), h('span', { class: 'dev-tab-count', text: plural(p.stages.length, 'stage') }))));
-      tabs.addEventListener('keydown', (e) => {   // arrow keys move between tabs (WAI-ARIA tabs pattern)
-        const i = dev.pipelines.findIndex((p) => p.id === pl.id);
-        const j = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? dev.pipelines.length - 1 : null;
-        if (j === null) return;
-        e.preventDefault();
-        const next = dev.pipelines[(j + dev.pipelines.length) % dev.pipelines.length];
-        dev.pid = next.id; store.set('pipeline', next.id); renderDev();
-        $('pl-tab-' + next.id).focus();
-      });
-      out.push(tabs);
-    }
-
-    out.push(h('section', { class: 'card pl-card', id: 'pl-panel', role: dev.pipelines.length > 1 ? 'tabpanel' : null,
-      'aria-labelledby': dev.pipelines.length > 1 ? 'pl-tab-' + pl.id : null },
-      h('div', { class: 'pl-head' },
-        h('div', { class: 'pl-title' }, h('h2', { text: pl.name }), h('span', { class: 'chip ' + (pl.status === 'ready' ? '' : 'warn'), text: cap(pl.status) })),
-        h('span', { class: 'pl-source mono', title: 'Defined in', text: `${dev.folder}/${pl.source}` })),
-      h('p', { class: 'pl-summary', text: pl.summary }),
-      flow(pl, sel.id),
-      h('div', { class: 'legend' },
-        h('span', { class: 'legend-item' }, h('span', { class: 'conn-badge' }, icon('fresh')), 'New context window at every handoff'),
-        h('span', { class: 'legend-item' }, h('span', { class: 'legend-gate' }, icon('shield')), 'Review gate: pass moves on, revise sends the work back'))));
-    out.push(stageDetail(pl, sel));
-    out.push(h('p', { class: 'hint dev-foot' }, `Add or edit a pipeline in ${dev.folder}/ (one .toml file each). Changes show up the next time you open this page.`));
-    return out;
-  }
-
-  function flow(pl, selId) {
-    const grid = h('div', { class: 'flow', role: 'group', 'aria-label': `${pl.name}: ${plural(pl.stages.length, 'stage')}` });
-    grid.style.gridTemplateColumns = pl.stages.map(() => 'minmax(150px, 1fr)').join(' 56px ');
-    pl.stages.forEach((st, i) => {
-      if (i) grid.append(h('div', { class: 'conn', 'aria-hidden': 'true' }, h('span', { class: 'conn-line' }),
-        h('span', { class: 'conn-badge', title: 'New context window: only the listed artifacts are handed on' }, icon('fresh')),
-        pl.stages[i - 1].kind === 'review' ? h('span', { class: 'conn-label', text: 'pass' }) : null));
-      grid.append(stageCard(pl, st, i, st.id === selId));
-    });
-    let row = 2;
-    pl.stages.forEach((st, g) => {
-      if (st.kind !== 'review') return;
-      const t = pl.stages.findIndex((s) => s.id === st.on_revise);
-      const lane = h('div', { class: 'lane', 'aria-hidden': 'true' },
-        h('span', { class: 'lane-label' }, icon('revise'), `Revise · up to ${plural(st.max_rounds, 'round')}`));
-      lane.style.gridColumn = `${2 * t + 1} / ${2 * g + 2}`;
-      lane.style.gridRow = String(row++);
-      grid.append(lane);
-    });
-    return h('div', { class: 'flow-scroll' }, grid);
-  }
-
-  function stageCard(pl, st, i, on) {
-    const review = st.kind === 'review';
-    const target = review ? pl.stages.find((s) => s.id === st.on_revise) : null;
-    const missing = st.missing_tools.length;
-    return h('button', { type: 'button', class: 'stage' + (review ? ' gate' : '') + (on ? ' on' : ''),
-      'aria-pressed': String(on), 'aria-controls': 'stage-detail',
-      onclick: () => { dev.stage[pl.id] = st.id; renderDev(); const d = $('stage-detail'); if (d) d.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } },
-    h('span', { class: 'stage-top' }, h('span', { class: 'stage-num', text: String(i + 1) }),
-      h('span', { class: 'stage-kind' }, review ? icon('shield') : null, review ? 'Review gate' : 'Work')),
-    h('span', { class: 'stage-role', text: st.role }),
-    h('span', { class: 'stage-goal', text: st.goal }),
-    h('span', { class: 'stage-foot' },
-      h('span', { class: 'stage-meta' + (missing ? ' warn' : ''), title: missing ? 'Not installed: ' + st.missing_tools.join(', ') : null },
-        missing ? icon('alert') : icon('tool'), st.tools.length ? plural(st.tools.length, 'tool') : 'No tools'),
-      review ? h('span', { class: 'stage-meta' }, icon('revise'), 'Back to ' + (target ? target.role : st.on_revise))
-        : h('span', { class: 'stage-meta mono' }, icon('arrow'), st.outputs.join(', '))));
-  }
-
-  function stageDetail(pl, st) {
-    const i = pl.stages.indexOf(st);
-    const review = st.kind === 'review';
-    const roleOf = (id) => { const s = pl.stages.find((x) => x.id === id); return s ? s.role : id; };
-    const next = pl.stages[i + 1];
-    const section = (title, ...kids) => h('div', { class: 'sd-sec' }, h('h4', { text: title }), ...kids);
-
-    const receives = h('ul', { class: 'sd-list' }, st.inputs.map((a) => h('li', {},
-      h('span', { class: 'mono sd-art', text: a.name }),
-      h('span', { class: 'sd-from', text: a.name === 'request' ? 'what you asked for' : 'from ' + roleOf(a.from || '') }))));
-    const handsOn = review
-      ? h('ul', { class: 'sd-list' },
-        h('li', {}, h('span', { class: 'chip', text: 'Pass' }), h('span', { class: 'sd-from', text: next ? 'moves on to ' + next.role : 'pipeline complete' })),
-        h('li', {}, h('span', { class: 'chip warn', text: 'Revise' }),
-          h('span', { class: 'sd-from', text: `feedback goes back to ${roleOf(st.on_revise)} (up to ${plural(st.max_rounds, 'round')}, then a person decides)` })))
-      : h('ul', { class: 'sd-list' }, st.outputs.map((a) => h('li', {}, h('span', { class: 'mono sd-art', text: a }),
-        h('span', { class: 'sd-from', text: next ? 'to ' + next.role + (pl.stages.slice(i + 2).some((s) => s.inputs.some((x) => x.name === a)) ? ' and later stages' : '') : 'final output' }))));
-
-    const tools = st.tools.length
-      ? h('div', { class: 'tool-chips' }, st.tools.map((t) => toolChip(t, st.missing_tools.includes(t))))
-      : h('p', { class: 'hint', text: 'No tools: this stage works only from what it’s handed.' });
-
-    return h('section', { class: 'card stage-detail', id: 'stage-detail', 'aria-labelledby': 'sd-title' },
-      h('div', { class: 'sd-head' },
-        h('div', {}, h('div', { class: 'sd-eyebrow', text: `Stage ${i + 1} of ${pl.stages.length}` }),
-          h('h3', { id: 'sd-title', text: st.role })),
-        h('div', { class: 'sd-chips' }, h('span', { class: 'chip' + (review ? ' warn' : ' run'), text: review ? 'Review gate' : 'Work' }),
-          st.thinking ? h('span', { class: 'chip run', text: 'Thinking: ' + cap(st.thinking) }) : null)),
-      h('p', { class: 'sd-goal', text: st.goal }),
-      h('div', { class: 'sd-fresh' }, icon('fresh'),
-        'Starts in a fresh context window. It sees only the items under “Receives”, never earlier reasoning, tool results or chat.'),
-      h('div', { class: 'sd-grid' },
-        h('div', { class: 'sd-col' },
-          section('Role instructions', h('p', { class: 'sd-prompt', text: st.prompt })),
-          section(review ? 'Passes only if' : 'Done when', h('ul', { class: 'sd-checks' },
-            st.done_when.length ? st.done_when.map((c) => h('li', {}, icon('check'), h('span', { text: c })))
-              : h('li', { class: 'hint', text: 'No criteria set.' })))),
-        h('div', { class: 'sd-col' },
-          section('Receives', receives),
-          section(review ? 'Decides' : 'Hands on', handsOn),
-          section('Agent Functions', tools))),
-      h('details', { class: 'sd-more' }, h('summary', {}, icon('chevron'), 'System prompt this stage gets'), codeBlock(st.system_prompt, 'text')),
-      h('details', { class: 'sd-more' }, h('summary', {}, icon('chevron'), 'Opening message it receives'), codeBlock(st.packet, 'text')));
-  }
-
-  // ---- tools page
-  function toolsPage() {
-    const tools = dev.tools || [];
-    const q = dev.filter.trim().toLowerCase();
-    const shown = tools.filter((t) => !q || t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q));
-    const input = h('input', { type: 'search', id: 'tool-filter', class: 'tool-filter', placeholder: 'Filter', 'aria-label': 'Filter agent functions', autocomplete: 'off' });
-    input.value = dev.filter;
+    const all = tools.list;
+    const q = tools.filter.trim().toLowerCase();
+    const shown = all.filter((t) => !q || t.name.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q));
+    const sel = all.find((t) => t.name === tools.sel) || shown[0] || all[0];
+    const input = h('input', { type: 'search', id: 'tool-filter', class: 'tool-filter', placeholder: 'Filter tools', 'aria-label': 'Filter tools', autocomplete: 'off' });
+    input.value = tools.filter;
     input.addEventListener('input', () => {
-      dev.filter = input.value;
+      tools.filter = input.value;
       const at = input.selectionStart;
-      renderDev();
+      renderTools();
       const again = $('tool-filter'); again.focus(); again.setSelectionRange(at, at);
     });
-    const grid = h('div', { class: 'tool-grid', role: 'list', 'aria-label': 'Agent functions' }, shown.map((t) => h('div', { role: 'listitem' },
-      withTip(h('button', { type: 'button', class: 'tool-tile' },
-        h('span', { class: 'tool-ico' }, icon(TOOL_ICONS[t.name] || 'tool')),
-        h('span', { class: 'tool-name mono', text: t.name }),
-        h('span', { class: 'chip' + (t.web ? '' : ' run'), text: t.web ? 'Web' : 'Local' })),
-      () => toolTip(t.name)))));
-    const problems = dev.toolErrors.map((e) => h('div', { class: 'callout warn', role: 'alert' }, icon('alert'),
-      h('div', {}, h('strong', { class: 'mono', text: e.file }), ' wasn’t loaded: ' + e.error)));
-    return [
-      ...problems,
-      h('div', { class: 'tools-head' },
-        h('p', { class: 'tools-lede', text: plural(tools.length, 'function') }),
-        input),
-      shown.length ? grid : h('div', { class: 'card dev-empty' }, h('p', { class: 'hint', text: tools.length ? `Nothing matches “${dev.filter}”.` : 'None loaded.' })),
-    ];
+    const groups = LANES.map((lane) => {
+      const list = shown.filter(lane.test);
+      if (!list.length) return null;
+      return h('section', { class: 'tool-group' },
+        h('h2', {}, h('span', { class: 'lane-dot ' + lane.dot, 'aria-hidden': 'true' }), lane.title,
+          lane.sub ? h('span', { class: 'sub', text: lane.sub }) : null),
+        h('div', { class: 'tool-grid' }, list.map((t) => h('button', { type: 'button', class: 'tool-tile', 'aria-pressed': String(sel && sel.name === t.name),
+          onclick: () => { tools.sel = t.name; store.set('tool', t.name); renderTools(); } },
+          h('span', { class: 'name', text: t.name }), h('span', { class: 'short', text: (t.description || '').split(/(?<=\.)\s/)[0] })))));
+    }).filter(Boolean);
+    body.replaceChildren(
+      ...tools.errors.map((e) => h('div', { class: 'callout', role: 'alert' }, icon('alert'),
+        h('div', {}, h('strong', { class: 'mono', text: e.file }), ' wasn’t loaded: ' + e.error))),
+      h('div', { class: 'tools-head' }, h('p', { class: 'tools-lede', text: `${plural(all.length, 'tool')} the model can call. Pick one to see what it takes.` }), input),
+      h('div', { class: 'tools-layout' },
+        h('div', { class: 'tool-groups' }, groups.length ? groups
+          : h('div', { class: 'dev-empty', text: all.length ? `Nothing matches “${tools.filter}”.` : 'No tools loaded.' })),
+        sel ? toolSpec(sel) : null));
   }
 
-  $('nav-tools').addEventListener('click', () => openDev('tools'));
-  window.addEventListener('resize', () => { if (tipOwner) hideTip(); });
+  function toolSpec(t) {
+    const lane = LANES.find((l) => l.test(t));
+    return h('aside', { class: 'tool-spec', 'aria-label': t.name },
+      h('div', { class: 'tool-spec-head' }, h('h2', { text: t.name }),
+        h('span', { class: 'chip ' + (t.web && t.requires !== 'sandbox' ? 'out' : 'in'), text: lane ? lane.title : '' })),
+      h('p', { text: t.description }),
+      h('h3', { text: t.params.length ? 'Arguments' : 'Takes no arguments' }),
+      t.params.length ? h('dl', { class: 'tool-args' }, t.params.flatMap((p) => [
+        h('dt', {}, h('span', { class: 'mono', text: p.name }), h('span', { class: 't', text: p.type + (p.required ? '' : ' · optional') })),
+        p.description ? h('dd', { text: p.description }) : null])) : null,
+      h('div', { class: 'tool-limits', text: `Times out after ${t.timeout_s} s` + (t.source ? ` · ${t.source}` : '') }));
+  }
 
   // ------------------------------------------------------------------ render all
   function renderAll() {
@@ -1351,12 +1239,10 @@
     const inChat = ui.view === 'chat';
     $('chat-view').hidden = !inChat;
     $('settings-view').hidden = ui.view !== 'settings';
-    $('dev-view').hidden = !isDev();
-    if (!isDev()) hideTip();
-    renderToggles(); renderChatList(); renderNav(); renderStatus(); renderHeader();
+    $('dev-view').hidden = ui.view !== 'tools';
+    renderSideTabs(); renderChatList(); renderNav(); renderStatus(); renderHeader();
     if (inChat) { renderMessages(); renderComposer(); }
-    renderFeed(); renderSettings(); renderDev();
-    relayout();
+    renderFeed(); renderSettings(); renderTools();
   }
 
   // ------------------------------------------------------------------ polling
@@ -1370,11 +1256,11 @@
       // merge the list, keeping local busy flags for chats this tab is streaming
       ui.list = st.chats.map((c) => ({ ...c, busy: c.busy || !!ui.streams[c.id] }));
       if (ui.activeId && !st.chats.some((c) => c.id === ui.activeId)) ui.activeId = st.chats[0] ? st.chats[0].id : null;
-      renderStatus(); renderChatList(); renderNav();
+      renderStatus(); renderChatList(); renderNav(); renderQbar();
       if (ui.view === 'settings') renderSettings();
-      if (wasRestarting && !st.restarting) { renderHeader(); renderRing(); }
+      if (wasRestarting && !st.restarting) renderHeader();
     } catch (e) {
-      ui.server && (ui.server.status = { vLLM: { state: 'failed', reason: 'dashboard unreachable' } });
+      if (ui.server) ui.server.status = { vLLM: { state: 'failed', reason: 'dashboard unreachable' } };
       renderStatus();
     }
     pollTimer = setTimeout(poll, ui.server && ui.server.restarting ? 1500 : 4000);
@@ -1382,22 +1268,41 @@
   const pollSoon = () => { clearTimeout(pollTimer); pollTimer = setTimeout(poll, 400); };
 
   // ------------------------------------------------------------------ events
+  $('logo-top').addEventListener('click', () => { if (ui.view !== 'chat') go('chat'); window.scrollTo({ top: 0, behavior: 'smooth' }); });
   $('new-chat').addEventListener('click', newChat);
-  $('gear').addEventListener('click', () => { ui.view = ui.view === 'settings' ? 'chat' : 'settings'; ui.menuOpen = false; ui.pending = null; renderAll(); });
-  $('internet-pill').addEventListener('click', () => patchSettings({ internet: !settings().internet }));
-  $('think-btn').addEventListener('click', (e) => { e.stopPropagation(); ui.menuOpen = !ui.menuOpen; renderHeader(); });
-  document.addEventListener('click', (e) => { if (ui.menuOpen && !$('think-wrap').contains(e.target)) { ui.menuOpen = false; renderHeader(); } });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ui.menuOpen) { ui.menuOpen = false; renderHeader(); $('think-btn').focus(); } });
-  $('hide-feed').addEventListener('click', () => { ui.feedOpen = false; store.set('feed', false); renderHeader(); renderFeed(); });
-  $('show-feed').addEventListener('click', () => { ui.feedOpen = true; store.set('feed', true); renderHeader(); renderFeed(); });
-  $('theme-light').addEventListener('click', () => { ui.theme = 'light'; store.set('theme', 'light'); applyTheme(); });
-  $('theme-dark').addEventListener('click', () => { ui.theme = 'dark'; store.set('theme', 'dark'); applyTheme(); });
-  $('delete-all').addEventListener('click', deleteAll);
+  $('nav-tools').addEventListener('click', () => go('tools'));
+  $('nav-settings').addEventListener('click', () => go('settings'));
+  $('back').addEventListener('click', back);
+  $('tab-chats').addEventListener('click', () => setSideTab('chats'));
+  $('tab-feed').addEventListener('click', () => setSideTab('feed'));
+  for (const id of ['tab-chats', 'tab-feed']) {
+    $(id).addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      const next = ui.sideTab === 'feed' ? 'chats' : 'feed';
+      setSideTab(next);
+      $('tab-' + next).focus();
+    });
+  }
+  $('q-web').addEventListener('click', () => patchSettings({ internet: !settings().internet }));
+  $('q-persona').addEventListener('click', (e) => toggleMenu('persona', e));
+  $('q-think').addEventListener('click', (e) => toggleMenu('think', e));
+  $('q-gear').addEventListener('click', openChatSettings);
+  document.addEventListener('click', (e) => {
+    if (ui.menu && !$('q-' + ui.menu + '-wrap').contains(e.target)) { ui.menu = null; renderQbar(); }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && ui.menu) { const was = ui.menu; ui.menu = null; renderQbar(); $('q-' + was).focus(); }
+  });
+  $('cs-close').addEventListener('click', () => $('chat-settings').close());
+  $('cs-done').addEventListener('click', () => $('chat-settings').close());
+  $('chat-settings').addEventListener('click', (e) => { if (e.target === $('chat-settings')) $('chat-settings').close(); });
+  $('raw-close').addEventListener('click', () => $('raw').close());
+  $('raw').addEventListener('click', (e) => { if (e.target === $('raw')) $('raw').close(); });
   $('discard').addEventListener('click', () => { ui.pending = null; renderSettings(); });
   $('apply').addEventListener('click', applyModel);
   $('send').addEventListener('click', onSend);
   $('closeout').addEventListener('click', onCloseOut);
-  $('clear-feed').addEventListener('click', clearFeed);
   $('attach').addEventListener('click', () => $('file-input').click());
   $('file-input').addEventListener('change', (e) => { addFiles([...e.target.files]); e.target.value = ''; });
   composer.addEventListener('input', () => { autosize(); renderComposer(); });
@@ -1408,18 +1313,21 @@
     const files = [...(e.clipboardData && e.clipboardData.files) || []];
     if (files.length) { e.preventDefault(); addFiles(files); }
   });
-  window.addEventListener('resize', relayout);
 
   // ------------------------------------------------------------------ boot
   (async () => {
+    ui.sideTab = store.get('sideTab', 'chats') === 'feed' ? 'feed' : 'chats';
     applyTheme();
+    renderSideTabs();
     await poll();
     if (!ui.server) return;
     const remembered = store.get('active', null);
     ui.activeId = ui.list.some((c) => c.id === remembered) ? remembered : (ui.list[0] ? ui.list[0].id : null);
     if (ui.activeId) await reloadChat(ui.activeId);
     renderAll();
+    autosize();
     scrollToBottom();
     composer.focus();
+    loadTools();         // for the badge and for telling web calls from local ones in the feed
   })();
 })();
