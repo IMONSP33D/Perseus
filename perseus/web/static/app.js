@@ -1161,13 +1161,11 @@
   }
 
   // ------------------------------------------------------------------ Agent Tools
-  // Read-only: what the model can call, grouped by where a call goes. Data from /api/tools.
+  // Read-only: what the model can call. Native tools ship with Perseus; addons are tool files you add
+  // to perseus/tools/. Data from /api/tools.
   const tools = { list: null, errors: [], loading: false, error: null, sel: store.get('tool', null), filter: '' };
-  const LANES = [
-    { id: 'box', title: 'On this box', sub: '', dot: 'in', test: (t) => !t.web && t.requires !== 'sandbox' },
-    { id: 'web', title: 'Public web', sub: 'read-only, through the gateway', dot: '', test: (t) => t.web && t.requires !== 'sandbox' },
-    { id: 'sandbox', title: 'Throwaway sandbox', sub: '', dot: 'in', test: (t) => t.requires === 'sandbox' },
-  ];
+  const firstSentence = (text) => (text || '').split(/(?<=\.)\s(?=[A-Z])/)[0];
+  const toolShort = (t) => t.short || firstSentence(t.description);
 
   async function loadTools() {
     if (tools.loading) return;
@@ -1193,9 +1191,10 @@
     }
     const all = tools.list;
     const q = tools.filter.trim().toLowerCase();
-    const shown = all.filter((t) => !q || t.name.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q));
-    const sel = all.find((t) => t.name === tools.sel) || shown[0] || all[0];
-    const input = h('input', { type: 'search', id: 'tool-filter', class: 'tool-filter', placeholder: 'Filter tools', 'aria-label': 'Filter tools', autocomplete: 'off' });
+    const match = (t) => !q || t.name.toLowerCase().includes(q) || toolShort(t).toLowerCase().includes(q)
+      || (t.description || '').toLowerCase().includes(q);
+    const sel = all.find((t) => t.name === tools.sel) || all.find(match) || all[0];
+    const input = h('input', { type: 'search', id: 'tool-filter', class: 'tool-filter', placeholder: 'Search tools', 'aria-label': 'Search tools', autocomplete: 'off' });
     input.value = tools.filter;
     input.addEventListener('input', () => {
       tools.filter = input.value;
@@ -1203,37 +1202,34 @@
       renderTools();
       const again = $('tool-filter'); again.focus(); again.setSelectionRange(at, at);
     });
-    const groups = LANES.map((lane) => {
-      const list = shown.filter(lane.test);
-      if (!list.length) return null;
-      return h('section', { class: 'tool-group' },
-        h('h2', {}, h('span', { class: 'lane-dot ' + lane.dot, 'aria-hidden': 'true' }), lane.title,
-          lane.sub ? h('span', { class: 'sub', text: lane.sub }) : null),
-        h('div', { class: 'tool-grid' }, list.map((t) => h('button', { type: 'button', class: 'tool-tile', 'aria-pressed': String(sel && sel.name === t.name),
-          onclick: () => { tools.sel = t.name; store.set('tool', t.name); renderTools(); } },
-          h('span', { class: 'name', text: t.name }), h('span', { class: 'short', text: (t.description || '').split(/(?<=\.)\s(?=[A-Z])/)[0] })))));
-    }).filter(Boolean);
+    const section = (title, list) => {
+      const shown = list.filter(match);
+      return h('section', { class: 'tool-group', 'aria-label': title },
+        h('h2', {}, title, h('span', { class: 'count-badge', text: String(list.length) })),
+        shown.length
+          ? h('div', { class: 'tool-grid' }, shown.map((t) => h('button', { type: 'button', class: 'tool-tile', 'aria-pressed': String(sel && sel.name === t.name),
+            onclick: () => { tools.sel = t.name; store.set('tool', t.name); renderTools(); } },
+            h('span', { class: 'name', text: t.name }), h('span', { class: 'short', text: toolShort(t) }))))
+          : h('p', { class: 'tool-none', text: q || list.length ? 'No match.' : 'None installed.' }));
+    };
     body.replaceChildren(
       ...tools.errors.map((e) => h('div', { class: 'callout', role: 'alert' }, icon('alert'),
         h('div', {}, h('strong', { class: 'mono', text: e.file }), ' wasn’t loaded: ' + e.error))),
-      h('div', { class: 'tools-head' }, h('p', { class: 'tools-lede', text: `${plural(all.length, 'tool')} the model can call. Pick one to see what it takes.` }), input),
+      input,
       h('div', { class: 'tools-layout' },
-        h('div', { class: 'tool-groups' }, groups.length ? groups
-          : h('div', { class: 'dev-empty', text: all.length ? `Nothing matches “${tools.filter}”.` : 'No tools loaded.' })),
+        h('div', { class: 'tool-groups' },
+          section('Native Tools', all.filter((t) => t.native)),
+          section('Addon Tools', all.filter((t) => !t.native))),
         sel ? toolSpec(sel) : null));
   }
 
+  // The details of the picked tool: name, one sentence, and the arguments it takes.
   function toolSpec(t) {
-    const lane = LANES.find((l) => l.test(t));
     return h('aside', { class: 'tool-spec', 'aria-label': t.name },
-      h('div', { class: 'tool-spec-head' }, h('h2', { text: t.name }),
-        h('span', { class: 'chip ' + (t.web && t.requires !== 'sandbox' ? 'out' : 'in'), text: lane ? lane.title : '' })),
-      h('p', { text: t.description }),
-      h('h3', { text: t.params.length ? 'Arguments' : 'Takes no arguments' }),
-      t.params.length ? h('dl', { class: 'tool-args' }, t.params.flatMap((p) => [
-        h('dt', {}, h('span', { class: 'mono', text: p.name }), h('span', { class: 't', text: p.type + (p.required ? '' : ' · optional') })),
-        p.description ? h('dd', { text: p.description }) : null])) : null,
-      h('div', { class: 'tool-limits', text: `Times out after ${t.timeout_s} s` + (t.source ? ` · ${t.source}` : '') }));
+      h('h2', { text: t.name }),
+      h('p', { text: firstSentence(t.description) }),
+      t.params.length ? h('dl', { class: 'tool-args' }, t.params.map((p) => h('div', {},
+        h('dt', { class: 'mono', text: p.name }), h('dd', { text: p.type + (p.required ? '' : ' · optional') })))) : null);
   }
 
   // ------------------------------------------------------------------ render all

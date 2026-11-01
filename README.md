@@ -255,10 +255,10 @@ Autonomous Pipelines is greyed out for now. It's a multi-step workflow feature t
 ## Agent functions
 
 <p align="center">
-  <img src="docs/screenshot-functions.png" alt="The Agent Tools page: tools grouped into On this box, Public web and Throwaway sandbox, with the details of run_code and its arguments" width="100%">
+  <img src="docs/screenshot-functions.png" alt="The Agent Tools page: the six Native Tools, an empty Addon Tools section, and the details of run_code with its arguments" width="100%">
 </p>
 
-These are what the model can do while it answers. Open Agent Tools in the sidebar and pick one to see what it does and the arguments it takes. They're grouped by where a call goes: on this box, the public web, or the throwaway sandbox.
+These are what the model can do while it answers. Open Agent Tools in the sidebar and pick one to see what it does and the arguments it takes. Native Tools are the ones that ship with Perseus; Addon Tools are tool files you add yourself (see below).
 
 | Function | What it does |
 | --- | --- |

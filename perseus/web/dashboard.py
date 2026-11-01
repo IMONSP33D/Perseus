@@ -34,6 +34,16 @@ PERSONAS = {
 CREATIVITY = {"precise": 0.2, "balanced": 0.7, "creative": 1.0}
 LENGTH = {"short": 1024, "medium": 4096, "long": 16384}
 THINKING = ("off", "low", "medium", "high", "max")
+# Tools that ship with Perseus, and the one-line blurb the Agent Tools page shows for each. Any other
+# tool file in perseus/tools/ is an addon; its blurb is the first sentence of its description.
+NATIVE_TOOLS = {
+    "calculator": "Increases mathematical precision",
+    "current_time": "Checks the current time",
+    "output_file": "Native file output",
+    "web_search": "Basic research snippets",
+    "fetch_url": "Grabs single page content",
+    "run_code": "Allows minimal code execution",
+}
 # Thinking budget per answer, on top of Length. Past it Perseus wraps up (see Engine.run_turn), so
 # the levels mean something even for models whose template has no effort setting (Qwen3).
 # Max: thinking may use everything a request allows (half the context) minus the answer's room.
@@ -284,8 +294,10 @@ class Dashboard:
                        "required": k in required,
                        "description": (v.get("description") or "") if isinstance(v, dict) else ""}
                       for k, v in props.items()]
+            native = t.source == f"perseus.tools.{name}" and name in NATIVE_TOOLS
             out.append({"name": name, "description": self.registry.description(t), "params": params, "web": self.registry.is_web(t),
                         "timeout_s": t.timeout_s, "source": t.source, "requires": t.requires,
+                        "native": native, "short": NATIVE_TOOLS[name] if native else "",
                         "used_by": used.get(name, [])})
         errors = self.tool_errors() if self.tool_errors else {}
         return {"tools": out, "errors": [{"file": f, "error": e} for f, e in sorted(errors.items())]}
