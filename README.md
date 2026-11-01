@@ -20,7 +20,7 @@ Perseus turns a Linux GPU box and an open-weight model into a private assistant 
 ---
 
 <p align="center">
-  <img src="docs/screenshot-chat.png" alt="The Perseus dashboard: a question, the model's thinking, an answer with a table and a downloadable file, and the tool feed showing a sandboxed code run" width="100%">
+  <img src="docs/screenshot-chat.png" alt="The Perseus dashboard: a question, the model's thinking, an answer with a table and a downloadable file, and the Tool feed tab showing a sandboxed code run and the file it handed over" width="100%">
 </p>
 
 ## What is Perseus?
@@ -255,7 +255,7 @@ Autonomous Pipelines is greyed out for now. It's a multi-step workflow feature t
 ## Agent functions
 
 <p align="center">
-  <img src="docs/screenshot-functions.png" alt="The Agent Tools page" width="100%">
+  <img src="docs/screenshot-functions.png" alt="The Agent Tools page: tools grouped into On this box, Public web and Throwaway sandbox, with the details of run_code and its arguments" width="100%">
 </p>
 
 These are what the model can do while it answers. Open Agent Tools in the sidebar and pick one to see what it does and the arguments it takes. They're grouped by where a call goes: on this box, the public web, or the throwaway sandbox.

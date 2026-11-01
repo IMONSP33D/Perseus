@@ -610,7 +610,10 @@
     if (ev.warning) out.push(h('p', { class: 'call-note flag', text: ev.warning }));
     if (f.headline) out.push(h('p', { class: 'call-headline', text: f.headline }));
     if (f.sections && f.sections.length) {
-      for (const s of f.sections) out.push(h('span', { class: 'call-h', text: s.title }), h('pre', { class: 'call-pre' }, highlight(s.text, s.language)));
+      for (const s of f.sections) {
+        const lang = s.language || (/^Code/.test(s.title) && ev.args && ev.args.language) || (ev.tool === 'output_file' && /\.(\w+)$/.test(s.title) ? s.title.split('.').pop() : '');
+        out.push(h('span', { class: 'call-h', text: s.title }), h('pre', { class: 'call-pre' }, highlight(s.text, lang)));
+      }
     } else {
       const args = typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args || {}, null, 2);
       out.push(h('span', { class: 'call-h', text: 'Arguments the model sent' }), h('pre', { class: 'call-pre' }, highlight(args, 'json')));
@@ -1208,7 +1211,7 @@
           lane.sub ? h('span', { class: 'sub', text: lane.sub }) : null),
         h('div', { class: 'tool-grid' }, list.map((t) => h('button', { type: 'button', class: 'tool-tile', 'aria-pressed': String(sel && sel.name === t.name),
           onclick: () => { tools.sel = t.name; store.set('tool', t.name); renderTools(); } },
-          h('span', { class: 'name', text: t.name }), h('span', { class: 'short', text: (t.description || '').split(/(?<=\.)\s/)[0] })))));
+          h('span', { class: 'name', text: t.name }), h('span', { class: 'short', text: (t.description || '').split(/(?<=\.)\s(?=[A-Z])/)[0] })))));
     }).filter(Boolean);
     body.replaceChildren(
       ...tools.errors.map((e) => h('div', { class: 'callout', role: 'alert' }, icon('alert'),

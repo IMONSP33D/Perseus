@@ -187,7 +187,8 @@ textarea::placeholder, input::placeholder { color: var(--faint); }
   position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
   gap: 8px 24px; min-height: 64px; padding: 0 40px 0 16px; background: var(--raised); border-bottom: 1px solid var(--line);
 }
-.top-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.top-left { flex: 1 1 auto; display: flex; align-items: center; gap: 14px; min-width: 0; }
+.top-left .title { flex: 0 1 auto; }
 .btn-back { flex: none; padding: 0 12px 0 8px; gap: 6px; background: var(--back-bg); border-color: var(--back-bg); color: var(--back-fg); font-weight: 600; }
 .btn-back:hover:not(:disabled) { border-color: var(--back-bg); filter: brightness(1.15); }
 .title {
