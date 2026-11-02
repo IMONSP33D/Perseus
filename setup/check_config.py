@@ -238,6 +238,7 @@ def _write_resolved(cfg: Config, hw, meta: ModelMeta, res, tool_parser, reasonin
     sections["model"].update({"requested_" + k: v for k, v in cfg["model"].items() if k != "id"})
     # whether a key is set, never the key: the sandbox broker reads it from tooling.toml itself
     sections["code_runner"]["api_key_set"] = bool(cfg["code_runner"]["api_key"])
+    sections["windows_rce"]["api_key_set"] = bool(cfg["windows_rce"]["api_key"])
     header = (f"Written by preflight at {datetime.now(timezone.utc).isoformat(timespec='seconds')}.\n"
               "Generated file: edit Config/*.toml and re-run `bash preflight.sh`, not this file.\n"
               "Holds no secrets; perseus.py reads only this file.")

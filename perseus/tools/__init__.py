@@ -19,6 +19,7 @@ Rules every tool follows (the loader and tests/test_tool_imports.py check the fi
 the socket guard is the wall behind it):
   * no network or process libraries: web access only through `ctx.gateway`,
     search only through `ctx.search`, code execution only through `ctx.sandbox`
+    (or `ctx.windows` for the Windows VM addon)
   * no file writes; return data, don't act
   * return a dict, list or string; raise ToolFailure with a message for the model
     (other exceptions reach the model only as their type name)
@@ -89,6 +90,7 @@ class ToolContext:
     limits: dict = field(default_factory=dict)
     engines: list[str] | None = None   # search engines chosen in the dashboard; None = all configured
     sandbox: Any = None          # perseus.sandbox.client.SandboxClient, or None when the code runner is off
+    windows: Any = None          # perseus.addons.windows_rce.client.WindowsClient, or None when the RCE addon is off
 
 
 @dataclass

@@ -38,6 +38,8 @@ from perseus.model.launch import (build_vllm_cmd, explain_crash, gpu_memory_used
 from perseus.model.launch import remedy as vllm_remedy
 from perseus.safety import selftest, socketguard
 from perseus.safety.gateway import Gateway
+from perseus.addons.windows_rce import launch as rce_launch
+from perseus.addons.windows_rce.client import WindowsClient
 from perseus.sandbox import launch as sandbox_launch
 from perseus.sandbox.client import SandboxClient
 from perseus.search import SearchClient
@@ -224,12 +226,17 @@ def main(argv: list[str] | None = None) -> None:
     sandbox_plan = sandbox_launch.plan(r.get("code_runner", {}), os.environ, r.get("data", {}).get("config", ""))
     sandbox_port, sandbox_token = free_port(), secrets.token_urlsafe(32)
     sandbox_secrets = (sandbox_token,) + tuple(v for k, v in sandbox_plan.env.items() if k == sandbox_launch.KEY_ENV)
+    # RCE addon (Windows VM): its relay reads the API key from tooling.toml itself; only the token is ours
+    rce_plan = rce_launch.plan(r.get("windows_rce", {}), r.get("data", {}).get("config", ""))
+    rce_port, rce_token = free_port(), secrets.token_urlsafe(32)
+    sandbox_secrets += (rce_token,) if rce_plan.start else ()
 
     # 1. the walls first ------------------------------------------------------
     gateway = Gateway(timeout_s=limits.get("fetch_timeout_s", 15), max_response_kb=limits.get("max_response_kb", 2048),
                       exact_secrets=(key,) + sandbox_secrets, log_path=logs / "gateway.jsonl")
     refused: list[str] = []
-    loopback = {vllm_port, search_port} | ({sandbox_port} if sandbox_plan.start else set())
+    loopback = ({vllm_port, search_port} | ({sandbox_port} if sandbox_plan.start else set())
+                | ({rce_port} if rce_plan.start else set()))
     socketguard.install(loopback, on_refuse=refused.append)
     loader = default_loader()
     for change in loader.refresh():
@@ -310,6 +317,12 @@ def main(argv: list[str] | None = None) -> None:
                             sandbox_launch.broker_env(os.environ, sandbox_plan, sandbox_token),
                             logs / "sandbox.log", sandbox.healthy, cwd=Path(__file__).resolve().parents[1],
                             ready_timeout_s=180, max_restarts=max_restarts))
+    windows = WindowsClient(rce_port, rce_token) if rce_plan.start else None
+    if windows is not None:
+        sup.add(ProcessSpec(rce_launch.PROCESS, rce_launch.relay_command(rce_port),
+                            rce_launch.relay_env(os.environ, rce_plan, rce_token),
+                            logs / "windows_rce.log", windows.healthy, cwd=Path(__file__).resolve().parents[1],
+                            ready_timeout_s=60, max_restarts=max_restarts))
     sup.add(ProcessSpec("vLLM", build_vllm_cmd(r, vllm_port, args.fast_start), vllm_env(key, paths.run),
                         logs / "vllm.log", lambda: vllm_healthy(vllm_port, key), cwd=paths.run,
                         max_restarts=max_restarts, explain=lambda log: explain_crash(log, r),
@@ -319,6 +332,8 @@ def main(argv: list[str] | None = None) -> None:
             sup.start("SearXNG")
         if sandbox is not None:
             sup.start("Sandbox")   # probes its toolchains while the model loads
+        if windows is not None:
+            sup.start(rce_launch.PROCESS)
         sup.start("vLLM")
         say(f"  starting vLLM (log: {logs / 'vllm.log'})")
         t_load = time.monotonic()
@@ -344,6 +359,15 @@ def main(argv: list[str] | None = None) -> None:
                 sandbox = None
         else:
             say(f"  · code runner: {sandbox_plan.reason}")
+        if windows is not None:
+            wv = sup.wait_ready(rce_launch.PROCESS)
+            ok, detail = rce_launch.connect(windows, registry) if wv.state == "up" else (False, f"off ({wv.reason})")
+            say(f"  ✓ Windows VM: {detail}" if ok else f"  ! Windows VM {detail}; run_windows_code unavailable "
+                                                     f"(log: {logs / 'windows_rce.log'})")
+            if not ok:
+                windows = None
+        else:
+            say(f"  · Windows VM: {rce_plan.reason}")
 
         # 4. first token and the parse check -----------------------------------
         llm = LLMClient(vllm_port, key, model)
@@ -364,7 +388,8 @@ def main(argv: list[str] | None = None) -> None:
         prof = r["profile"]
         depths = {k: int(prof.get(f"lookups_{k}", v)) for k, v in DEPTHS.items()}
         recorder = Recorder(meta={"model": model, "hardware": r["hardware"]["summary"], "vllm": r["vllm"]})
-        engine = Engine(llm, registry, ToolContext(gateway=gateway, search=search, limits=limits, sandbox=sandbox),
+        engine = Engine(llm, registry, ToolContext(gateway=gateway, search=search, limits=limits, sandbox=sandbox,
+                                                windows=windows),
                         Feed(),
                         EngineSettings(lookup_limit=depths[limits.get("research_depth", "standard")],
                                        tool_result_tokens=prof.get("tool_result_tokens") or None,
@@ -517,6 +542,7 @@ def run_replay(path: Path) -> None:
     def make(llm, override):
         reg = load_builtin()
         reg.provide("sandbox")   # recorded run_code results replay from the file; nothing runs
+        reg.provide("windows_rce")   # likewise run_windows_code
         return Engine(llm, reg, ToolContext(), Feed(), EngineSettings(), tool_override=override)
 
     rows = replay(path, make)

@@ -10,10 +10,10 @@ Perseus turns a Linux GPU box and an open-weight model into a private assistant 
 
 ![Python 3.11–3.14](https://img.shields.io/badge/python-3.11%E2%80%933.14-2B2D42)
 ![vLLM 0.32](https://img.shields.io/badge/vLLM-0.32.0-2B2D42)
-![Tests](https://img.shields.io/badge/tests-349%20passing-16A34A)
+![Tests](https://img.shields.io/badge/tests-391%20passing-16A34A)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-2B2D42)](LICENSE)
 
-[Install](#installing-perseus) · [Update](#updating-perseus) · [Using it](#using-the-dashboard) · [Agent functions](#agent-functions) · [Code runner](#the-code-runner) · [Settings](#configuration) · [Safety](#how-perseus-keeps-you-safe) · [License](#license)
+[Install](#installing-perseus) · [Update](#updating-perseus) · [Using it](#using-the-dashboard) · [Agent functions](#agent-functions) · [Code runner](#the-code-runner) · [Windows VM](#the-windows-vm-rce-addon) · [Settings](#configuration) · [Safety](#how-perseus-keeps-you-safe) · [License](#license)
 
 </div>
 
@@ -269,6 +269,13 @@ These are what the model can do while it answers. Open Agent Tools in the sideba
 | `output_file` | Gives you a file (Markdown, code, CSV, …) to preview, copy or download, instead of pasting it into the answer. It can give several files in one answer. |
 | `run_code` | Runs a program in a fresh cloud sandbox. Only shown once the [code runner](#the-code-runner) is set up. |
 
+Addon tools that ship with Perseus but stay hidden until you set them up:
+
+| Function | What it does |
+| --- | --- |
+| `run_windows_code` | Runs a program in your own disposable Windows VM. See [the Windows VM](#the-windows-vm-rce-addon). |
+| `reset_windows_vm` | Puts that VM back on its clean snapshot after runs that kept their state. |
+
 ### Writing your own
 
 Each function is one Python file in `perseus/tools/`. Copy [`_example.py`](perseus/tools/_example.py), give it a new name and edit it. Perseus picks up new and changed files before the next answer, with no restart needed.
@@ -327,6 +334,52 @@ What programs can reach is set by `network` in `[code_runner]`:
 Perseus tests the network from inside a real sandbox at startup. If programs can reach more than the setting allows, it turns the code runner off.
 
 To check where your code actually runs, run `~/.local/bin/uv run python -m perseus.sandbox.doctor`. It creates one sandbox with your key, shows its E2B id and what it reports about itself, then deletes it. Every run is also logged in `logs/sandbox.log`, without the code or its output.
+
+## The Windows VM (RCE addon)
+
+`run_windows_code` runs the model's code in a real Windows 11 VM, for anything Linux can't do: Win32 and .NET APIs, the registry, PowerShell, cmd, Windows DLLs. It talks to the **WindowsRCE sandbox API**, which runs on a Windows PC with VirtualBox and puts the VM back on a clean snapshot after every run. The model gets the outcome (`ok`, `compile_error`, `runtime_error` or `timeout`), the exit code, stdout and stderr, and any files it asked to collect.
+
+Languages: Python, Node.js, Windows PowerShell 5.1, cmd and C# (.NET 10).
+
+```
+run_windows_code ─ctx.windows─▶ RCE relay ─X-API-Key─▶ WindowsRCE API (your PC) ─▶ Windows VM
+                                 (on the GPU box; holds the key, enforces your settings)
+```
+
+The relay is a separate process, like the code runner's broker: the key never enters the process that runs tools, and the settings below are enforced there whatever the model asks for.
+
+To set it up:
+
+1. On the Windows PC, start the API and leave the window open:
+   ```powershell
+   cd "$HOME\VirtualBox VMs\rce-sandbox"
+   powershell -ExecutionPolicy Bypass -File .\start-api.ps1
+   ```
+2. Make the API reachable from the GPU box. The simplest way is the SSH session you already use for the dashboard, with a reverse forward added:
+   ```bash
+   ssh -L 8080:127.0.0.1:8080 -R 8765:127.0.0.1:8765 you@your-gpu-box
+   ```
+   The API then answers at `http://127.0.0.1:8765` on the box, and it can stay bound to `127.0.0.1` on the PC (safer: code inside the VM can't reach it on the host-only network). The tool works only while that SSH session is open.
+3. Add the API key to `Config/tooling.toml`:
+   ```toml
+   [windows_rce]
+   api_key = "your WindowsRCE X-API-Key"
+   ```
+4. Run `bash preflight.sh`, then `python3 perseus.py`. On startup you'll see `✓ Windows VM: …`, or a line saying why it's off. If the tunnel isn't up yet, it says so, and runs work as soon as it is.
+
+The settings in `[windows_rce]`:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `url` | `http://127.0.0.1:8765` | Where the API answers, as seen from the GPU box |
+| `allow_network` | `false` | Lets the model connect the VM to the internet for a run (`pip`, `npm`, NuGet). Separate from the Internet Access switch |
+| `allow_keep_state` | `true` | Lets the model keep the VM's state between calls (install once, then use). Kept state is thrown away by `reset_windows_vm`, after `idle_revert_s` unused, and when Perseus stops |
+| `run_timeout_s` | `120` | The longest run the model may ask for (up to 600) |
+| `max_output_kb` | `64` | stdout + stderr kept per run |
+| `max_collect_kb` | `512` | Total size of files a run can hand back |
+| `idle_revert_s` | `600` | How long a VM with kept state may sit unused before it's reset |
+
+Programs run as a local administrator over SSH with no visible desktop, so GUI windows never appear and anything waiting for keyboard input hangs until the timeout. The API runs one job at a time; other calls wait their turn. Every run is logged in `logs/windows_rce.log` with its job id and outcome, never the code or its output.
 
 ## Configuration
 

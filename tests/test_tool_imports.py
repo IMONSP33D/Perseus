@@ -21,9 +21,10 @@ class ToolFolder(unittest.TestCase):
         reg = load_builtin()
         for name in reg.all_names():
             self.assertEqual(reg.loaded(name).source, f"perseus.tools.{name}", name)
-        self.assertEqual(reg.all_names(), ["calculator", "current_time", "fetch_url", "output_file", "run_code",
-                                          "web_search"])
-        # run_code needs the code sandbox, so it's hidden until the launcher provides it
+        self.assertEqual(reg.all_names(), ["calculator", "current_time", "fetch_url", "output_file",
+                                          "reset_windows_vm", "run_code", "run_windows_code", "web_search"])
+        # run_code needs the code sandbox and the *_windows_* tools the RCE addon's Windows VM,
+        # so they're hidden until the launcher provides them
         self.assertEqual(reg.names(), ["calculator", "current_time", "fetch_url", "output_file", "web_search"])
         self.assertTrue(reg.get("fetch_url").lookup and reg.get("web_search").lookup)
         self.assertFalse(reg.get("calculator").lookup)

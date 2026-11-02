@@ -141,6 +141,16 @@ def _languages(v: list) -> str | None:
     return f"unknown language(s) {', '.join(map(str, bad))} (known: {', '.join(LANGUAGES)})" if bad else None
 
 
+def _rce_url(v: str) -> str | None:
+    from perseus.addons.windows_rce.upstream import check_url
+    from perseus.sandbox.backends import SandboxError
+    try:
+        check_url(v)
+    except SandboxError:
+        return "must be the API's address, like http://127.0.0.1:8765 (http or https, no path)"
+    return None
+
+
 # keys that changed: say what replaced them instead of just "unknown key"
 RENAMED = {("code_runner", "internet"): 'replaced by network = "none", "packages" or "full" (internet = true '
                                         'is "full"; the default "packages" allows package installs only)',
@@ -157,7 +167,7 @@ UPDATE_HINT = "bash Config/configuration.sh"
 def home_file(section: str, key: str) -> str:
     if section == "secrets" or (section, key) == ("model", "id"):
         return "provider.toml"
-    if section == "code_runner":
+    if section in ("code_runner", "windows_rce"):
         return "tooling.toml"
     return "settings.toml"
 
@@ -210,6 +220,17 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "build_timeout_s": Key((int,), 120, check=_range(5, 180)),
         "run_timeout_s": Key((int,), 30, check=_range(1, 120)),
         "max_output_kb": Key((int,), 64, check=_range(4, 1024)),
+    },
+    "windows_rce": {             # the RCE addon: run_windows_code in a disposable Windows VM
+        "api_key": Key((str,), "", check=_api_key, secret=True),   # read by the RCE relay only
+        "enabled": Key((bool,), True),
+        "url": Key((str,), "http://127.0.0.1:8765", check=_rce_url),
+        "allow_network": Key((bool,), False),
+        "allow_keep_state": Key((bool,), True),
+        "run_timeout_s": Key((int,), 120, check=_range(1, 600)),
+        "max_output_kb": Key((int,), 64, check=_range(4, 1024)),
+        "max_collect_kb": Key((int,), 512, check=_range(0, 8192)),
+        "idle_revert_s": Key((int,), 600, check=_range(30, 86400)),
     },
 }
 
@@ -416,6 +437,8 @@ def validate(raw: dict, *, text: str = "", name: str = "perseus.toml", texts: di
         data["code_runner"]["api_key"] = "" if key in ("", "e2b_...") else key
         if data["code_runner"]["enabled"] and not data["code_runner"]["api_key"]:
             warnings.append("no [code_runner] api_key set in tooling.toml: the code runner (run_code) stays off")
+        rce = data["windows_rce"]["api_key"].strip()
+        data["windows_rce"]["api_key"] = "" if rce.endswith("...") else rce
 
     if problems:
         raise ConfigError(problems)
