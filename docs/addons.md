@@ -64,6 +64,7 @@ perseus/addons/<name>/
   __init__.py        a docstring: what the pieces are
   addon.py           REQUIRED  the manifest: ADDON = Addon(...)
   tooling.toml       REQUIRED  the [<name>] section, as it should appear in Config/tooling.toml
+  dependencies.toml  optional  Python packages the addon's process needs, exactly pinned (§3.5)
   tools/
     <tool>.py        REQUIRED  at least one tool file; same rules as perseus/tools/
   client.py          what tools get as ctx.<name>  (name is a convention, not a rule)
@@ -174,6 +175,29 @@ The import ban applies to addon tool files exactly as to `perseus/tools/`: no `s
 Tool files in `tools/` are loaded at boot. A broken one is reported on the Agent Tools page and never
 takes the engine down; a tool name that clashes with another file's is refused.
 
+### 3.5 `dependencies.toml`: the addon's own packages
+
+An addon's process may need packages the core doesn't ship (the code runner's broker needs `e2b`).
+It declares them in its own file, exactly pinned:
+
+```toml
+[packages]
+e2b = "2.62.0"
+```
+
+`bash preflight.sh` installs every addon's packages into Perseus's environment *after* its pinned
+`uv sync` (which makes the environment exact to `uv.lock` and would remove anything installed before
+it), with `python -m setup.addon_deps install`. Nothing is added to `pyproject.toml` or `uv.lock`.
+
+The rules: exact versions only (`"2.62.0"`, never `>=` or `~=`; the manifest is refused otherwise),
+and two addons may not pin different versions of one package (`setup/addon_deps.py` stops before
+installing anything). At boot, an addon whose packages aren't installed at the pinned version is
+reported `off (needs e2b (want 2.62.0, not installed); run bash preflight.sh)` before its `plan()`
+runs, so a fresh checkout that hasn't run preflight never crashes on an import.
+
+The engine never imports these packages; only the addon's own process does. That is what keeps a
+provider SDK, and whatever it pulls in, out of the process that runs tools.
+
 ## 4. What Perseus does at boot
 
 For every addon it found, in name order, the launcher runs the same four steps. None of them is
@@ -280,19 +304,19 @@ addons do this.
 2. `addon.py`: fill `label`, `summary`, **`agent_use`**, `config`; write `plan`, `process`, `client`,
    `connect`.
 3. `tooling.toml`: the `[<name>]` section, one commented line per key, matching `config`.
-4. `tools/`: one file per tool, each with `requires="<name>"` and using `ctx.<name>`.
-5. `tests/`: the checks above, plus a fake of your service.
-6. `README.md`: how a user sets it up.
-7. `bash preflight.sh` (merges your section into `Config/tooling.toml`), fill in the key, `python3 perseus.py`.
-   The boot log shows `✓ <label>: …` or `· <label>: off (…)` with the reason.
-8. Run both test suites.
+4. `dependencies.toml`: any package the addon's process needs, exactly pinned.
+5. `tools/`: one file per tool, each with `requires="<name>"` and using `ctx.<name>`.
+6. `tests/`: the checks above, plus a fake of your service.
+7. `README.md`: how a user sets it up.
+8. `bash preflight.sh` (merges your section into `Config/tooling.toml` and installs your packages), fill in
+   the key, `python3 perseus.py`. The boot log shows `✓ <label>: …` or `· <label>: off (…)` with the reason.
+9. Run both test suites.
 
 ## 8. Known limits
 
-- **Python packages.** An addon that needs a third-party package (the code runner needs `e2b`) has no
-  way yet to declare it; `pyproject.toml`'s `sandbox` extra and `preflight.sh`'s `uv sync --extra
-  sandbox` still name it. Until the contract carries dependencies, an addon's `plan()` should check
-  with `importlib.util.find_spec()` and say `off (the X package isn't installed)` rather than fail later.
+- **Packages are installed into Perseus's one environment.** Addons share it with the core, so a pin
+  that conflicts with vLLM's dependency tree fails at install time (`uv pip install` says which).
+  Per-addon virtual environments would lift that; nothing needs them yet.
 - **One process per addon.** `process()` returns a single `Process`; an addon that needs two runs them
   from one supervisor of its own.
 - **Load-once tools.** Native tool files hot-reload when edited; addon tool files are loaded the same

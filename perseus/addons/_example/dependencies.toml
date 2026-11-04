@@ -1,0 +1,6 @@
+# Packages this addon's own process needs, if any. Exact pins only ("1.2.3", never ">=1.2"):
+# bash preflight.sh installs them into Perseus's environment after the pinned sync, and at boot
+# an addon whose packages are missing is reported "off (…; run bash preflight.sh)" rather than broken.
+# The engine never imports them: only the addon's process (service.py) does.
+[packages]
+# requests = "2.32.3"

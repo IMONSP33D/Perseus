@@ -1,0 +1,4 @@
+# Packages the sandbox broker needs (a separate process; never imported by Perseus or its tools).
+# Exact pins only; bash preflight.sh installs them into Perseus's environment.
+[packages]
+e2b = "2.62.0"

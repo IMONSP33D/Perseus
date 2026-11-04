@@ -230,8 +230,10 @@ fi
 # ================================================================= 4. vLLM
 step "4/6 vLLM (pinned) and a GPU smoke test"
 t_start
-uv sync -q "${LOCK[@]}" --python "$PYTHON_VERSION" --extra serve --extra sandbox
+uv sync -q "${LOCK[@]}" --python "$PYTHON_VERSION" --extra serve
 ok "vLLM $("$PY" -c 'import importlib.metadata as m; print(m.version("vllm"))') installed"
+# each addon's dependencies.toml, after the exact sync above (which would remove anything not in uv.lock)
+"$PY" -m setup.addon_deps install --python "$ROOT/$PY" || exit $?
 t_end env_vllm
 t_start
 "$PY" -m setup.check_config "${CFG[@]}" smoke || exit $?

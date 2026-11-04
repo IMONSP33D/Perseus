@@ -311,7 +311,7 @@ Tools that need a service, a key and a process of their own come as addons: fold
 
 Each addon's section in `Config/tooling.toml` starts with its `api_key`; the key is read only by the addon's own process, never by `perseus.py` or the model. On start-up you'll see `✓ code runner: …` and `✓ Windows VM: …`, or a line saying why each is off.
 
-Adding one of your own is dropping a folder into `perseus/addons/` (copy [`_example/`](perseus/addons/_example/)); no file outside that folder changes. [docs/addons.md](docs/addons.md) explains what Perseus does with such a folder and what it must contain, including the `agent_use` text every addon has to give the model.
+Adding one of your own is dropping a folder into `perseus/addons/` (copy [`_example/`](perseus/addons/_example/)); no file outside that folder changes, and any packages it needs are listed in its own `dependencies.toml` for `preflight.sh` to install. [docs/addons.md](docs/addons.md) explains what Perseus does with such a folder and what it must contain, including the `agent_use` text every addon has to give the model.
 
 ## Configuration
 

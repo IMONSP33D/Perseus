@@ -223,7 +223,7 @@ def main(argv: list[str] | None = None) -> None:
     # addons: each decides from its own config section whether it starts; a plan() may also move a secret
     # out of this process's environment before anything inherits it (the code runner does, for E2B_API_KEY)
     config_path = r.get("data", {}).get("config", "")
-    plans = {a.name: a.plan(r.get(a.name, {}), config_path, os.environ) for a in addons.discover()}
+    plans = {a.name: addon_plan(a, r.get(a.name, {}), config_path) for a in addons.discover()}
     ports_tokens = {n: (free_port(), secrets.token_urlsafe(32)) for n, p in plans.items() if p.start}
     addon_secrets = tuple(t for _, t in ports_tokens.values()) + tuple(
         v for n, p in plans.items() if p.start for v in p.env.values()
@@ -529,6 +529,17 @@ def _public_ip() -> str:
         if not addr[0].startswith("127."):
             return addr[0]
     return "<this box's IP>"
+
+
+def addon_plan(a, cfg: dict, config_path: str):
+    """The addon's own plan(), unless a package it declared isn't installed: then off, with the fix."""
+    try:
+        missing = addons.missing_packages(a.dependencies())
+    except ValueError as e:
+        return addons.Plan(False, f"off ({e})")
+    if missing:
+        return addons.Plan(False, f"off (needs {', '.join(missing)}; run bash preflight.sh)")
+    return a.plan(cfg, config_path, os.environ)
 
 
 def run_replay(path: Path) -> None:

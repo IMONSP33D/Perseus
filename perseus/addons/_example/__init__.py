@@ -4,6 +4,7 @@ rename everything called `example`, and restart Perseus. Nothing outside the fol
     addon.py        the manifest: ADDON = Addon(...), with agent_use (required) telling the model how
                     to use your tools
     tooling.toml    your [section] of Config/tooling.toml, one commented line per key
+    dependencies.toml   packages your process needs, exactly pinned; preflight installs them
     tools/          your tool files (the same rules as perseus/tools/; see perseus/tools/_example.py)
     client.py       what your tools get as ctx.<name>: the only thing that talks to your service
     service.py      (optional) the process the launcher supervises for you, holding your API key

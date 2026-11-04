@@ -18,6 +18,9 @@ What a folder holds:
     tooling.toml      REQUIRED  the addon's [section] as it appears in Config/tooling.toml,
                                 with every key on one commented line; `bash Config/configuration.sh`
                                 merges it into the user's file
+    dependencies.toml optional  Python packages the addon's own process needs, exactly pinned;
+                                `bash preflight.sh` installs them (setup/addon_deps.py), and an addon
+                                whose packages are missing is reported off at boot, not broken
     <anything>.py     optional  the client, the process, the provider API: whatever the addon needs
     tests/test_*.py   optional  picked up by `python -m unittest discover -s tests -t .`
     README.md         optional  how to set the addon up; linked from the main README's addon table
@@ -55,6 +58,9 @@ ADDONS_DIR = Path(__file__).resolve().parent
 PACKAGE = "perseus.addons"
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
 TEMPLATE_FILE = "tooling.toml"
+DEPS_FILE = "dependencies.toml"
+PIN_RE = re.compile(r"^[0-9]+(\.[0-9]+)*([a-zA-Z0-9.+!-]*)$")     # an exact version, never an operator or a range
+DIST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")   # a distribution name (PEP 508)
 FORMERLY_RE = re.compile(r"^\s*#\s*formerly\s*:\s*(.+?)\s*$", re.M)   # in tooling.toml: old names of the section
 
 
@@ -112,6 +118,10 @@ class Addon:
     def template(self) -> str:
         """The addon's tooling.toml fragment, as merged into Config/tooling.toml."""
         return (self.folder / TEMPLATE_FILE).read_text()
+
+    def dependencies(self) -> dict[str, str]:
+        """{distribution: exact version} from dependencies.toml, or {} without one."""
+        return read_dependencies(self.folder)
 
 
 _ADDONS: dict[Path, list[Addon]] = {}
@@ -198,6 +208,50 @@ def check(a: Addon, folder: Path, expect_name: str | None = None) -> list[str]:
     for f in ("name", "label", "summary"):
         if "\n" in str(getattr(a, f, "")):
             out.append(f"{f} must be one line")
+    try:
+        read_dependencies(folder)
+    except ValueError as e:
+        out.append(str(e))
+    return out
+
+
+def read_dependencies(folder: Path) -> dict[str, str]:
+    """The [packages] table of a folder's dependencies.toml: {distribution: exact version}.
+    Raises ValueError for anything but exact pins, so a loose range never reaches an install."""
+    f = folder / DEPS_FILE
+    if not f.is_file():
+        return {}
+    import tomllib
+    try:
+        doc = tomllib.loads(f.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"{DEPS_FILE}: {e}")
+    table = doc.get("packages")
+    if not isinstance(table, dict) or set(doc) - {"packages"}:
+        raise ValueError(f"{DEPS_FILE} must hold one [packages] table of name = \"version\" lines")
+    out = {}
+    for name, version in table.items():
+        if not DIST_RE.match(str(name)):
+            raise ValueError(f"{DEPS_FILE}: {name!r} is not a package name")
+        if not isinstance(version, str) or not PIN_RE.match(version):
+            raise ValueError(f"{DEPS_FILE}: {name} must be pinned to one exact version, e.g. \"2.62.0\" "
+                             f"(got {version!r}); Perseus installs exact pins only")
+        out[str(name)] = version
+    return out
+
+
+def missing_packages(deps: dict[str, str]) -> list[str]:
+    """Which of these pins aren't installed at that exact version, as 'name (want X, have Y)' lines."""
+    from importlib import metadata
+    out = []
+    for name, want in deps.items():
+        try:
+            have = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            out.append(f"{name} (want {want}, not installed)")
+            continue
+        if have != want:
+            out.append(f"{name} (want {want}, have {have})")
     return out
 
 

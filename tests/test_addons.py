@@ -18,7 +18,7 @@ from tests.configs import update
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = [p for p in (ROOT / "perseus").rglob("*.py") if "addons" not in p.parts] \
-    + list((ROOT / "setup").glob("*.py")) + [ROOT / "perseus.py", ROOT / "preflight.sh",
+    + list((ROOT / "setup").glob("*.py")) + [ROOT / "perseus.py", ROOT / "preflight.sh", ROOT / "pyproject.toml",
                                               ROOT / "Config" / "templates" / "tooling.toml"]
 
 MANIFEST = '''
@@ -173,6 +173,51 @@ class Discovery(unittest.TestCase):
             update.MOVES.pop(("old_zeta", "enabled"), None)
 
 
+class Dependencies(unittest.TestCase):
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp())
+
+    def write(self, text):
+        (self.d / "dependencies.toml").write_text(text)
+
+    def test_exact_pins_only(self):
+        self.assertEqual(addons.read_dependencies(self.d), {})            # no file: no packages
+        self.write('[packages]\ne2b = "2.62.0"\nRequests = "2.32.3"\n')
+        self.assertEqual(addons.read_dependencies(self.d), {"e2b": "2.62.0", "Requests": "2.32.3"})
+        for bad in ('[packages]\ne2b = ">=2.62"\n', '[packages]\ne2b = "2.62.*"\n', '[packages]\ne2b = 2\n',
+                    'e2b = "1.0"\n', '[packages]\n"bad name!" = "1.0"\n', '[packages]\n[other]\n', 'not toml ='):
+            self.write(bad)
+            with self.assertRaises(ValueError, msg=bad):
+                addons.read_dependencies(self.d)
+
+    def test_missing_packages_compare_exact_versions(self):
+        from importlib import metadata
+        have = metadata.version("pip") if any(d.metadata["Name"].lower() == "pip" for d in metadata.distributions()) else None
+        self.assertEqual(addons.missing_packages({}), [])
+        self.assertEqual(addons.missing_packages({"surely_not_installed_xyz": "1.0"}),
+                         ["surely_not_installed_xyz (want 1.0, not installed)"])
+        if have:
+            self.assertEqual(addons.missing_packages({"pip": have}), [])
+            self.assertEqual(addons.missing_packages({"pip": "0.0.1"}), [f"pip (want 0.0.1, have {have})"])
+
+    def test_the_installer_lists_every_addons_pins_once(self):
+        from setup import addon_deps
+        reqs, problems = addon_deps.requirements()
+        self.assertEqual(problems, [])
+        self.assertIn("e2b==2.62.0", reqs)                              # the code runner's broker needs it
+        self.assertEqual(len(reqs), len(set(r.split("==")[0] for r in reqs)))
+
+    def test_a_bad_pin_makes_the_manifest_invalid(self):
+        from perseus.addons._example.addon import ADDON
+        src = ROOT / "perseus" / "addons" / "_example"
+        for f in ("addon.py", "tooling.toml"):
+            (self.d / f).write_text((src / f).read_text())
+        (self.d / "tools").mkdir()
+        (self.d / "tools" / "x.py").write_text("")
+        self.write('[packages]\nfoo = "~=1.0"\n')
+        self.assertTrue(any("exact version" in p for p in check(ADDON, self.d, expect_name="example")))
+
+
 class ToolContextByName(unittest.TestCase):
     def test_addons_are_attributes_fixed_fields_stay(self):
         c = ToolContext(gateway="g", limits={"a": 1}, foo="F")
@@ -207,6 +252,7 @@ class ShippedAddons(unittest.TestCase):
                 for k, v in tpl.items():
                     self.assertIsInstance(a.config[k], Key)
                     self.assertIsNone(a.config[k].validate(v), f"{a.name}.{k}")
+                a.dependencies()                               # parses, or the manifest would be invalid
                 p = a.plan({}, "", {})
                 self.assertIsInstance(p, Plan)
                 self.assertFalse(p.start)                       # no section at all: off, with a reason
@@ -250,7 +296,8 @@ class Template(unittest.TestCase):
 
     def test_the_guide_exists_and_names_every_required_file(self):
         guide = (ROOT / "docs" / "addons.md").read_text()
-        for needle in ("addon.py", "tooling.toml", "tools/", "agent_use", "plan(", "connect(", "requires="):
+        for needle in ("addon.py", "tooling.toml", "dependencies.toml", "tools/", "agent_use", "plan(", "connect(",
+                       "requires="):
             self.assertIn(needle, guide)
 
 
