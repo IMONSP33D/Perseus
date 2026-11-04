@@ -19,7 +19,8 @@ dependencies = [
 serve = [
   "vllm==0.32.0",   # pulls torch==2.13.0
 ]
-# The code runner's sandbox broker (a separate process; never imported by Perseus or its tools).
+# The e2b_code_environment addon's broker (a separate process; never imported by Perseus or its tools).
+# Addons cannot declare packages yet (docs/addons.md §8), so this extra stays here.
 sandbox = [
   "e2b==2.62.0",
 ]

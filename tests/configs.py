@@ -1,16 +1,23 @@
 """Config folders for tests, made from Config/templates the way configuration.sh makes them."""
 
+import importlib.util
+import sys
 import tempfile
 from pathlib import Path
 
-from perseus import CONFIG_TEMPLATES
+from perseus import CONFIG_TEMPLATES, ROOT
 from perseus.config import CONFIG_FILES
+
+_spec = importlib.util.spec_from_file_location("perseus_config_update", ROOT / "Config" / "update.py")
+update = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = update      # dataclasses look their module up by name
+_spec.loader.exec_module(update)
 
 TOKEN = "hf_" + "a" * 34
 
 
 def template_texts(model: str = "Qwen/Qwen3-32B", token: str = TOKEN) -> dict[str, str]:
-    texts = {n: (CONFIG_TEMPLATES / n).read_text() for n in CONFIG_FILES}
+    texts = {n: t.text for n, t in update.read_templates(CONFIG_TEMPLATES).items()}   # addon sections included
     texts["provider.toml"] = (texts["provider.toml"].replace('"org/model-name"', f'"{model}"')
                               .replace('"hf_..."', f'"{token}"'))
     return texts

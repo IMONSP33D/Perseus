@@ -169,7 +169,7 @@ def _from_source(ctx, ref: str) -> tuple[bytes, str]:
 @tool(description="Give the user a file they can download from the chat (text files can also be previewed and "
                   "copied). Pass exactly one of: `content` for text you write yourself (Markdown, source code, "
                   "CSV); `source` for a file a tool brought back, such as an .exe, .dll, .zip or image a program "
-                  "built and listed in run_windows_code's `collect` (pass the ref that run reported, e.g. "
+                  "built and collected by a code-running tool (pass the ref that run reported, e.g. "
                   "\"windows:publish/app.exe\"); or `content_base64` for a small binary you generated yourself. "
                   "Never paste binary data into `content`. The file is not shown in your answer, so mention it "
                   "in a sentence; don't repeat its content. One file per call; call it again for each further file.",

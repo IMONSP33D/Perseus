@@ -49,7 +49,10 @@ from typing import Any, Callable
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 TEMPLATES = HERE / "templates"
+ADDONS = ROOT / "perseus" / "addons"   # each addon's tooling.toml is appended to templates/tooling.toml
 FILES = ("provider.toml", "settings.toml", "tooling.toml")   # the order they're written and reported in
+ADDON_FILE = "tooling.toml"            # the file an addon's section lives in
+FORMERLY_RE = re.compile(r"^\s*#\s*formerly\s*:\s*(.+?)\s*$")   # in an addon's tooling.toml: old section names
 BASE = ".base"
 BACKUP = ".backup"
 LEGACY = "perseus.toml"            # the single file used before the split
@@ -58,10 +61,11 @@ POINTER = ".perseus-data"          # preflight's data-directory pointer, kept be
 # Renamed or moved keys: old (section, key) -> (new section, new key, value transform), or None for a key
 # that was removed with no automatic replacement. Add a line here whenever a key is renamed.
 Transform = Callable[[Any], Any]
+# An addon's old section names (the "# formerly:" line in its tooling.toml) are added here by read_templates().
 MOVES: dict[tuple[str, str], tuple[str, str, Transform | None] | None] = {
-    ("secrets", "code_runner_api_key"): ("code_runner", "api_key", None),
-    ("code_runner", "internet"): ("code_runner", "network", lambda v: "full" if v is True else "none"),
-    ("code_runner", "key_file"): None,     # replaced by [code_runner] api_key: paste the key itself
+    ("secrets", "code_runner_api_key"): ("e2b_code_environment", "api_key", None),
+    ("code_runner", "internet"): ("e2b_code_environment", "network", lambda v: "full" if v is True else "none"),
+    ("code_runner", "key_file"): None,     # replaced by the code runner's api_key: paste the key itself
 }
 
 PLACEHOLDER_RE = re.compile(r"^(org/model-name|.*\.\.\.)$")   # template values that mean "fill me in"
@@ -144,8 +148,14 @@ class Template:
 
     @classmethod
     def read(cls, path: Path) -> "Template":
-        text = path.read_text()
-        values = flatten(read_toml(path), path.name)
+        return cls.from_text(path.name, path.read_text())
+
+    @classmethod
+    def from_text(cls, name: str, text: str) -> "Template":
+        try:
+            values = flatten(tomllib.loads(text), name)
+        except tomllib.TOMLDecodeError as e:
+            raise UpdateError(f"templates/{name}: {e} (fix it by hand; nothing was changed)")
         # every key must sit on one `key = value` line so it can be rewritten in place
         found: dict[Ref, Any] = {}
         section = None
@@ -154,14 +164,14 @@ class Template:
                 section = m.group("name")
             elif (m := KEY_LINE.match(raw)) and not raw.lstrip().startswith("#"):
                 if section is None:
-                    raise UpdateError(f"templates/{path.name}: {m.group('key')} sits outside a [section]")
+                    raise UpdateError(f"templates/{name}: {m.group('key')} sits outside a [section]")
                 value_text, _ = split_value(m.group("rest"))
                 found[(section, m.group("key"))] = tomllib.loads(f"v = {value_text}")["v"]
         if found != values:
             missing = sorted(set(values) - set(found))
-            raise UpdateError(f"templates/{path.name}: keep every value on one line "
+            raise UpdateError(f"templates/{name}: keep every value on one line "
                               f"(couldn't place {', '.join(map(label, missing)) or 'a key'})")
-        return cls(path.name, text, values)
+        return cls(name, text, values)
 
     def render(self, choose: Callable[[Ref, Any], Any], yours: dict[Ref, str] | None = None) -> str:
         """The template text with each value replaced by choose(ref, template_value).
@@ -222,10 +232,61 @@ def key_lines(text: str) -> dict[Ref, str]:
     return out
 
 
-def read_templates(folder: Path) -> dict[str, Template]:
+@dataclass
+class Fragment:
+    """One addon's section of tooling.toml: its folder name, its template text and its former section names."""
+    name: str
+    text: str
+    formerly: tuple[str, ...]
+
+
+def addon_fragments(addons_dir: Path) -> list[Fragment]:
+    """Every perseus/addons/<name>/tooling.toml, in name order; folders starting with "_" are templates."""
+    out = []
+    if not addons_dir.is_dir():
+        return out
+    for folder in sorted(p for p in addons_dir.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))):
+        f = folder / ADDON_FILE
+        if not f.is_file():
+            continue
+        lines, formerly = [], []
+        for raw in f.read_text().splitlines():
+            if (m := FORMERLY_RE.match(raw)):
+                formerly += [x.strip() for x in m.group(1).split(",") if x.strip()]
+            else:
+                lines.append(raw)
+        text = "\n".join(lines).strip("\n") + "\n"
+        if f"[{folder.name}]" not in text:
+            raise UpdateError(f"{f}: an addon's {ADDON_FILE} must hold its own [{folder.name}] section")
+        out.append(Fragment(folder.name, text, tuple(formerly)))
+    return out
+
+
+def section_moves(fragments: list[Fragment], templates: dict[str, Template]) -> dict[Ref, tuple[str, str, None]]:
+    """An addon's old section name -> its new one, key by key, for every key the new section has."""
+    out: dict[Ref, tuple[str, str, None]] = {}
+    for fr in fragments:
+        keys = [k for (sec, k) in templates[ADDON_FILE].values if sec == fr.name]
+        for old in fr.formerly:
+            for k in keys:
+                out[(old, k)] = (fr.name, k, None)
+    return out
+
+
+def read_templates(folder: Path, addons_dir: Path | None = None) -> dict[str, Template]:
+    """The three templates, with every addon's section appended to tooling.toml. Also registers the
+    addons' section renames in MOVES, so a config still using an old name is carried over."""
     if not folder.is_dir():
         raise UpdateError(f"no templates folder at {folder}")
-    templates = {name: Template.read(folder / name) for name in FILES}
+    fragments = addon_fragments(ADDONS if addons_dir is None else addons_dir)
+    templates = {}
+    for name in FILES:
+        text = (folder / name).read_text()
+        if name == ADDON_FILE and fragments:
+            text = text.rstrip("\n") + "\n" + "".join("\n" + fr.text for fr in fragments)
+        templates[name] = Template.from_text(name, text)
+    for ref, target in section_moves(fragments, templates).items():
+        MOVES.setdefault(ref, target)
     owner: dict[Ref, str] = {}
     for t in templates.values():
         for ref in t.values:
@@ -389,7 +450,7 @@ def backup(folder: Path, p: Plan, yours: Yours) -> Path | None:
     return dest
 
 
-def write(folder: Path, templates_dir: Path, p: Plan, yours: Yours) -> Path | None:
+def write(folder: Path, templates: dict[str, Template], p: Plan, yours: Yours) -> Path | None:
     private_dir(folder)
     saved = backup(folder, p, yours) if (p.changed or yours.legacy or p.dropped) else None
     for name in FILES:
@@ -399,7 +460,7 @@ def write(folder: Path, templates_dir: Path, p: Plan, yours: Yours) -> Path | No
             os.chmod(folder / name, 0o600)
     base = private_dir(folder / BASE)
     for name in FILES:
-        shutil.copyfile(templates_dir / name, base / name)
+        write_private(base / name, templates[name].text)
     if yours.legacy is not None:
         # the old file now lives only in the backup, so nobody edits a file Perseus no longer reads
         if saved is not None:
@@ -494,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
         if legacy.is_file() and yours.legacy is None and not a.legacy:
             p.notes.append(f"{rel(legacy)} is still here but isn't read anymore; delete it once you've checked "
                            f"{rel(folder)}/")
-        saved = None if a.check else write(folder, TEMPLATES, p, yours)
+        saved = None if a.check else write(folder, templates, p, yours)
     except UpdateError as e:
         print(f"  ✗ {e}", file=sys.stderr)
         return 2

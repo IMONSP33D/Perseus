@@ -6,7 +6,7 @@ from pathlib import Path
 from perseus import CONFIG_TEMPLATES
 from perseus.config import dumps
 from perseus.config import ConfigError, load, parse_override_value, split_overrides
-from tests.configs import TOKEN, config_dir, edited, template_texts, write_dir
+from tests.configs import TOKEN, config_dir, edited, template_texts, update, write_dir
 
 GOOD = template_texts()
 
@@ -29,12 +29,12 @@ class Load(unittest.TestCase):
         self.assertEqual(cfg["model"]["id"], "Qwen/Qwen3-32B")
         self.assertEqual(cfg["model"]["tensor_parallel"], "auto")      # [model] spans provider and settings
         self.assertEqual(cfg["limits"]["warn_download_minutes"], 20)
-        self.assertEqual(cfg["code_runner"]["network"], "packages")
+        self.assertEqual(cfg["e2b_code_environment"]["network"], "packages")
         self.assertEqual(len(cfg.files), 3)
         self.assertFalse(any("belongs in" in w for w in cfg.warnings))
 
     def test_untouched_templates_name_the_missing_model(self):
-        folder = write_dir({n: (CONFIG_TEMPLATES / n).read_text() for n in GOOD})
+        folder = write_dir({n: t.text for n, t in update.read_templates(CONFIG_TEMPLATES).items()})   # unfilled
         with self.assertRaises(ConfigError) as e:
             load(folder)
         self.assertTrue(any("provider.toml" in p and "[model] id" in p and "repo id" in p
@@ -94,9 +94,9 @@ class Load(unittest.TestCase):
         cfg = load(good(('api_key = "e2b_..."', 'api_key = "e2b_' + "k" * 30 + '"')))
         public = cfg.public()
         self.assertNotIn("secrets", public)
-        self.assertNotIn("api_key", public["code_runner"])               # tool keys stay out too
+        self.assertNotIn("api_key", public["e2b_code_environment"])               # tool keys stay out too
         self.assertNotIn("e2b_kkk", repr(public))
-        self.assertEqual(cfg["code_runner"]["api_key"], "e2b_" + "k" * 30)
+        self.assertEqual(cfg["e2b_code_environment"]["api_key"], "e2b_" + "k" * 30)
 
 
 class SplitFolder(unittest.TestCase):
@@ -136,7 +136,7 @@ class SplitFolder(unittest.TestCase):
         texts["provider.toml"] += 'code_runner_api_key = "e2b_x"\n'      # under [secrets], the pre-split spot
         with self.assertRaises(ConfigError) as e:
             load(write_dir(texts))
-        self.assertIn("moved to [code_runner] api_key in tooling.toml", e.exception.problems[0])
+        self.assertIn("moved to [e2b_code_environment] api_key in tooling.toml", e.exception.problems[0])
 
     def test_a_single_file_still_loads(self):
         flat = load(good()).data

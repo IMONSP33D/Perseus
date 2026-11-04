@@ -509,3 +509,5 @@ textarea::placeholder, input::placeholder { color: var(--faint); }
 .chat-row:hover .chat-del, .chat-row.active .chat-del, .chat-del:focus-visible { opacity: 1; }
 @media (hover: none) { .chat-del { opacity: 1; } }
 .think-status { color: var(--muted); }
+
+.tool-note { margin: 0 0 10px; font-size: 13px; color: var(--muted); }

@@ -412,7 +412,7 @@ class Engine:
             return recorded
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"tool-{tool.name}")
         try:
-            ctx = dataclasses.replace(self.ctx, outputs=self.outputs)   # the context is shared; the files are this chat's
+            ctx = self.ctx.with_outputs(self.outputs)   # the context is shared; the files are this chat's
             return pool.submit(tool.fn, ctx, **args).result(timeout=tool.timeout_s)
         finally:
             pool.shutdown(wait=False, cancel_futures=True)

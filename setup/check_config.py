@@ -7,7 +7,7 @@
   searxng-settings  write <data>/searxng/settings.yml for this box
 
 The download is setup/download.py. Only setup/ and preflight.sh ever read [secrets] (provider.toml);
-tool keys in tooling.toml are read only by each tool's own process (the sandbox broker for run_code).
+tool keys in tooling.toml are read only by each tool's own process (an addon's own process, such as the code runner's broker).
 """
 
 from __future__ import annotations
@@ -236,9 +236,12 @@ def _write_resolved(cfg: Config, hw, meta: ModelMeta, res, tool_parser, reasonin
         "notes": {"warnings": res.warnings},
     }
     sections["model"].update({"requested_" + k: v for k, v in cfg["model"].items() if k != "id"})
-    # whether a key is set, never the key: the sandbox broker reads it from tooling.toml itself
-    sections["code_runner"]["api_key_set"] = bool(cfg["code_runner"]["api_key"])
-    sections["windows_rce"]["api_key_set"] = bool(cfg["windows_rce"]["api_key"])
+    # whether each addon's secret is set, never the secret: the addon's own process reads it from tooling.toml
+    from perseus.config import ADDON_SECTIONS, SCHEMA
+    for section in ADDON_SECTIONS:
+        for key, spec in SCHEMA[section].items():
+            if spec.secret:
+                sections[section][f"{key}_set"] = bool(cfg[section][key])
     header = (f"Written by preflight at {datetime.now(timezone.utc).isoformat(timespec='seconds')}.\n"
               "Generated file: edit Config/*.toml and re-run `bash preflight.sh`, not this file.\n"
               "Holds no secrets; perseus.py reads only this file.")

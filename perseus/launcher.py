@@ -24,6 +24,7 @@ import signal
 import socket
 import sys
 import time
+from typing import Any
 from pathlib import Path
 
 from perseus import timing
@@ -38,10 +39,7 @@ from perseus.model.launch import (build_vllm_cmd, explain_crash, gpu_memory_used
 from perseus.model.launch import remedy as vllm_remedy
 from perseus.safety import selftest, socketguard
 from perseus.safety.gateway import Gateway
-from perseus.addons.windows_rce import launch as rce_launch
-from perseus.addons.windows_rce.client import WindowsClient
-from perseus.sandbox import launch as sandbox_launch
-from perseus.sandbox.client import SandboxClient
+from perseus import addons
 from perseus.search import SearchClient
 from perseus.search import command as searxng_command
 from perseus.supervisor import ProcessSpec, Supervisor
@@ -222,21 +220,20 @@ def main(argv: list[str] | None = None) -> None:
     run = RunFiles(paths)
     run.pid("perseus", os.getpid())
     run.secret("vllm.key", key)
-    # code runner: decided before anything inherits this process's environment (moves E2B_API_KEY out of it)
-    sandbox_plan = sandbox_launch.plan(r.get("code_runner", {}), os.environ, r.get("data", {}).get("config", ""))
-    sandbox_port, sandbox_token = free_port(), secrets.token_urlsafe(32)
-    sandbox_secrets = (sandbox_token,) + tuple(v for k, v in sandbox_plan.env.items() if k == sandbox_launch.KEY_ENV)
-    # RCE addon (Windows VM): its relay reads the API key from tooling.toml itself; only the token is ours
-    rce_plan = rce_launch.plan(r.get("windows_rce", {}), r.get("data", {}).get("config", ""))
-    rce_port, rce_token = free_port(), secrets.token_urlsafe(32)
-    sandbox_secrets += (rce_token,) if rce_plan.start else ()
+    # addons: each decides from its own config section whether it starts; a plan() may also move a secret
+    # out of this process's environment before anything inherits it (the code runner does, for E2B_API_KEY)
+    config_path = r.get("data", {}).get("config", "")
+    plans = {a.name: a.plan(r.get(a.name, {}), config_path, os.environ) for a in addons.discover()}
+    ports_tokens = {n: (free_port(), secrets.token_urlsafe(32)) for n, p in plans.items() if p.start}
+    addon_secrets = tuple(t for _, t in ports_tokens.values()) + tuple(
+        v for n, p in plans.items() if p.start for v in p.env.values()
+        if isinstance(v, str) and len(v) >= 16 and not v.startswith("{"))   # tokens and keys, not settings JSON
 
     # 1. the walls first ------------------------------------------------------
     gateway = Gateway(timeout_s=limits.get("fetch_timeout_s", 15), max_response_kb=limits.get("max_response_kb", 2048),
-                      exact_secrets=(key,) + sandbox_secrets, log_path=logs / "gateway.jsonl")
+                      exact_secrets=(key,) + addon_secrets, log_path=logs / "gateway.jsonl")
     refused: list[str] = []
-    loopback = ({vllm_port, search_port} | ({sandbox_port} if sandbox_plan.start else set())
-                | ({rce_port} if rce_plan.start else set()))
+    loopback = {vllm_port, search_port} | {port for port, _ in ports_tokens.values()}
     socketguard.install(loopback, on_refuse=refused.append)
     loader = default_loader()
     for change in loader.refresh():
@@ -244,7 +241,10 @@ def main(argv: list[str] | None = None) -> None:
             say(f"  tools: {change}")
     registry = load_builtin()
     ports = {"vLLM": vllm_port, "SearXNG": search_port, "Perseus": int(r["server"]["port"])}
-    rep = selftest.run(gateway, ports, registry, reach_url="https://example.com/", tool_dirs=[TOOLS_DIR])
+    rep = selftest.run(gateway, ports, registry, reach_url="https://example.com/",
+                       tool_dirs=[TOOLS_DIR] + [a.tools_dir for a in addons.discover()])
+    for name, why in addons.errors().items():
+        say(f"  ! addon {name} skipped: {why}")
     refused.clear()  # the self-test's own probe isn't a real refusal
     if args.selftest:
         print_selftest(rep, verbose=True)
@@ -311,18 +311,19 @@ def main(argv: list[str] | None = None) -> None:
     if have_searxng:
         sup.add(ProcessSpec("SearXNG", sx_cmd, {**os.environ, **sx_env}, logs / "searxng.log", search.healthy,
                             cwd=paths.searxng, ready_timeout_s=90, max_restarts=max_restarts))
-    sandbox = SandboxClient(sandbox_port, sandbox_token) if sandbox_plan.start else None
-    if sandbox is not None:
-        sup.add(ProcessSpec("Sandbox", sandbox_launch.broker_command(sandbox_port),
-                            sandbox_launch.broker_env(os.environ, sandbox_plan, sandbox_token),
-                            logs / "sandbox.log", sandbox.healthy, cwd=Path(__file__).resolve().parents[1],
-                            ready_timeout_s=180, max_restarts=max_restarts))
-    windows = WindowsClient(rce_port, rce_token) if rce_plan.start else None
-    if windows is not None:
-        sup.add(ProcessSpec(rce_launch.PROCESS, rce_launch.relay_command(rce_port),
-                            rce_launch.relay_env(os.environ, rce_plan, rce_token),
-                            logs / "windows_rce.log", windows.healthy, cwd=Path(__file__).resolve().parents[1],
-                            ready_timeout_s=60, max_restarts=max_restarts))
+    clients: dict[str, Any] = {}
+    procs: dict[str, str] = {}      # addon name -> its supervised process's name
+    root = Path(__file__).resolve().parents[1]
+    for a in addons.discover():
+        if a.name not in ports_tokens:
+            continue
+        port, token = ports_tokens[a.name]
+        clients[a.name] = c = a.client(port, token)
+        proc = a.process(plans[a.name], port, token, os.environ) if a.process else None
+        if proc is not None:
+            procs[a.name] = a.label
+            sup.add(ProcessSpec(a.label, proc.command, proc.env, logs / f"{a.name}.log", proc.healthy or c.healthy,
+                                cwd=root, ready_timeout_s=proc.ready_timeout_s, max_restarts=max_restarts))
     sup.add(ProcessSpec("vLLM", build_vllm_cmd(r, vllm_port, args.fast_start), vllm_env(key, paths.run),
                         logs / "vllm.log", lambda: vllm_healthy(vllm_port, key), cwd=paths.run,
                         max_restarts=max_restarts, explain=lambda log: explain_crash(log, r),
@@ -330,10 +331,8 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if have_searxng:
             sup.start("SearXNG")
-        if sandbox is not None:
-            sup.start("Sandbox")   # probes its toolchains while the model loads
-        if windows is not None:
-            sup.start(rce_launch.PROCESS)
+        for name in procs:
+            sup.start(procs[name])   # the code runner probes its toolchains while the model loads
         sup.start("vLLM")
         say(f"  starting vLLM (log: {logs / 'vllm.log'})")
         t_load = time.monotonic()
@@ -350,24 +349,21 @@ def main(argv: list[str] | None = None) -> None:
             say("  ✓ SearXNG up" if sx.state == "up" else f"  ! SearXNG not up ({sx.reason}); web_search unavailable")
         else:
             say("  ! SearXNG isn't installed (run bash preflight.sh); web_search unavailable")
-        if sandbox is not None:
-            sb = sup.wait_ready("Sandbox")
-            ok, detail = sandbox_launch.connect(sandbox, registry) if sb.state == "up" else (False, f"off ({sb.reason})")
-            say(f"  ✓ code runner: {detail}" if ok else f"  ! code runner {detail}; run_code unavailable "
-                                                       f"(log: {logs / 'sandbox.log'})")
-            if not ok:
-                sandbox = None
-        else:
-            say(f"  · code runner: {sandbox_plan.reason}")
-        if windows is not None:
-            wv = sup.wait_ready(rce_launch.PROCESS)
-            ok, detail = rce_launch.connect(windows, registry) if wv.state == "up" else (False, f"off ({wv.reason})")
-            say(f"  ✓ Windows VM: {detail}" if ok else f"  ! Windows VM {detail}; run_windows_code unavailable "
-                                                     f"(log: {logs / 'windows_rce.log'})")
-            if not ok:
-                windows = None
-        else:
-            say(f"  · Windows VM: {rce_plan.reason}")
+        for a in addons.discover():
+            if a.name not in clients:
+                say(f"  · {a.label}: {plans[a.name].reason}")
+                continue
+            m = sup.wait_ready(procs[a.name]) if a.name in procs else None
+            if m is not None and m.state != "up":
+                ok, detail = False, f"off ({m.reason})"
+            else:
+                ok, detail = a.connect(clients[a.name], registry)
+            if ok:
+                registry.describe(a.name, a.agent_use)
+                say(f"  ✓ {a.label}: {detail}")
+            else:
+                clients[a.name] = None
+                say(f"  ! {a.label} {detail}; its tools are unavailable (log: {logs / f'{a.name}.log'})")
 
         # 4. first token and the parse check -----------------------------------
         llm = LLMClient(vllm_port, key, model)
@@ -388,8 +384,7 @@ def main(argv: list[str] | None = None) -> None:
         prof = r["profile"]
         depths = {k: int(prof.get(f"lookups_{k}", v)) for k, v in DEPTHS.items()}
         recorder = Recorder(meta={"model": model, "hardware": r["hardware"]["summary"], "vllm": r["vllm"]})
-        engine = Engine(llm, registry, ToolContext(gateway=gateway, search=search, limits=limits, sandbox=sandbox,
-                                                windows=windows),
+        engine = Engine(llm, registry, ToolContext(gateway=gateway, search=search, limits=limits, **clients),
                         Feed(),
                         EngineSettings(lookup_limit=depths[limits.get("research_depth", "standard")],
                                        tool_result_tokens=prof.get("tool_result_tokens") or None,
@@ -541,8 +536,8 @@ def run_replay(path: Path) -> None:
 
     def make(llm, override):
         reg = load_builtin()
-        reg.provide("sandbox")   # recorded run_code results replay from the file; nothing runs
-        reg.provide("windows_rce")   # likewise run_windows_code
+        for a in addons.discover():
+            reg.provide(a.name)   # recorded tool results replay from the file; nothing runs
         return Engine(llm, reg, ToolContext(), Feed(), EngineSettings(), tool_override=override)
 
     rows = replay(path, make)

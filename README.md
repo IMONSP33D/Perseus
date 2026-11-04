@@ -13,7 +13,7 @@ Perseus turns a Linux GPU box and an open-weight model into a private assistant 
 ![Tests](https://img.shields.io/badge/tests-391%20passing-16A34A)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-2B2D42)](LICENSE)
 
-[Install](#installing-perseus) · [Update](#updating-perseus) · [Using it](#using-the-dashboard) · [Agent functions](#agent-functions) · [Code runner](#the-code-runner) · [Windows VM](#the-windows-vm-rce-addon) · [Settings](#configuration) · [Safety](#how-perseus-keeps-you-safe) · [License](#license)
+[Install](#installing-perseus) · [Update](#updating-perseus) · [Using it](#using-the-dashboard) · [Agent functions](#agent-functions) · [Addons](#addons) · [Settings](#configuration) · [Safety](#how-perseus-keeps-you-safe) · [License](#license)
 
 </div>
 
@@ -95,10 +95,10 @@ A few tips on picking a model:
 
 ### 4. (Optional) Turn on the code runner
 
-Skip this for now if you like; you can add it any time. See [The code runner](#the-code-runner) for the full steps. In short, put your E2B key in `Config/tooling.toml`:
+Skip this for now if you like; you can add it any time. See [Addons](#addons) and the code runner's README for the full steps. In short, put your E2B key in `Config/tooling.toml`:
 
 ```toml
-[code_runner]
+[e2b_code_environment]
 api_key = "e2b_..."
 ```
 
@@ -258,7 +258,7 @@ Autonomous Pipelines is greyed out for now. It's a multi-step workflow feature t
   <img src="docs/screenshot-functions.png" alt="The Agent Tools page: the six Native Tools, an empty Addon Tools section, and the details of run_code with its arguments" width="100%">
 </p>
 
-These are what the model can do while it answers. Open Agent Tools in the sidebar and pick one to see what it does and the arguments it takes. Native Tools are the ones that ship with Perseus; Addon Tools are tool files you add yourself (see below).
+These are what the model can do while it answers. Open Agent Tools in the sidebar and pick one to see what it does and the arguments it takes. Native Tools are the ones that ship in `perseus/tools/`; each [addon](#addons) gets its own group.
 
 | Function | What it does |
 | --- | --- |
@@ -267,14 +267,14 @@ These are what the model can do while it answers. Open Agent Tools in the sideba
 | `calculator` | Exact arithmetic, so the model doesn't have to guess |
 | `current_time` | The current date and time |
 | `output_file` | Gives you a file to download, instead of pasting it into the answer: text it writes (Markdown, code, CSV, …, which you can also preview and copy), or a binary a program built, such as an `.exe` from the Windows VM. It can give several files in one answer. |
-| `run_code` | Runs a program in a fresh cloud sandbox. Only shown once the [code runner](#the-code-runner) is set up. |
 
-Addon tools that ship with Perseus but stay hidden until you set them up:
+[Addons](#addons) add more, shown under their own heading on the Agent Tools page once set up:
 
-| Function | What it does |
-| --- | --- |
-| `run_windows_code` | Runs a program in your own disposable Windows VM. See [the Windows VM](#the-windows-vm-rce-addon). |
-| `reset_windows_vm` | Puts that VM back on its clean snapshot after runs that kept their state. |
+| Function | Addon | What it does |
+| --- | --- | --- |
+| `run_code` | `e2b_code_environment` | Runs a program in a fresh cloud sandbox |
+| `run_windows_code` | `test_windows_sandbox` | Runs a program in your own disposable Windows VM |
+| `reset_windows_vm` | `test_windows_sandbox` | Puts that VM back on its clean snapshot after runs that kept their state |
 
 ### Writing your own
 
@@ -296,93 +296,22 @@ The rules:
 
 - Return a dict, list or string. Raise `ToolFailure("…")` to give the model a clear error message. Any other exception reaches the model only as its type name.
 - Don't import network or process libraries (`socket`, `requests`, `subprocess` and so on). Perseus refuses to load a file that does.
-- Take `ctx` as the first argument when you need it. To read the web, use `ctx.gateway.fetch(url)`. To search, use `ctx.search`. To run code, use `ctx.sandbox`.
+- Take `ctx` as the first argument when you need it. To read the web, use `ctx.gateway.fetch(url)`. To search, use `ctx.search`. A tool that needs a service of its own belongs in an [addon](#addons), and reaches it as `ctx.<addon name>`.
 - Set `lookup=True` on anything that reads the web, for example `@tool(lookup=True)`. It then counts towards the research limit, and its results are marked as untrusted.
 - Every tool needs a unique name. A file that reuses another file's tool name is refused, and the reason appears on the Agent Tools page.
 
-## The code runner
+## Addons
 
-`run_code` lets the model test its code before giving it to you. Each run happens in a brand-new virtual machine on [E2B](https://e2b.dev), which is deleted straight afterwards. Nothing runs on your GPU server.
+Tools that need a service, a key and a process of their own come as addons: folders under `perseus/addons/`, each with its own section in `Config/tooling.toml`, its own tools, tests and README. Two ship with Perseus and stay off until you set them up:
 
-To set it up:
-
-1. Create an API key at [e2b.dev](https://e2b.dev) and add it to `Config/tooling.toml`:
-   ```toml
-   [code_runner]
-   api_key = "e2b_..."
-   ```
-2. Build the sandbox image with all the compilers. You only do this once, it builds on E2B's side, and it needs no Docker. (Preflight installs uv in `~/.local/bin` without adding it to your PATH, hence the full path.)
-   ```bash
-   ~/.local/bin/uv run python -m setup.sandbox.build_template
-   ```
-3. Tell Perseus to use that image, in the same section of `Config/tooling.toml`:
-   ```toml
-   e2b_template = "perseus-code"
-   ```
-4. Run `bash preflight.sh`, then `python3 perseus.py`. On startup you'll see `✓ code runner: e2b · python, javascript, …`, or a line saying why it's off.
-
-If you skip step 2, you get E2B's standard image, which has Python, JavaScript and Bash only. With the full image you also get C, C++, Rust, Go and Java. Perseus checks which languages are really there and only offers those.
-
-What programs can reach is set by `network` in `[code_runner]`:
-
-| `network` | Programs can reach |
-| --- | --- |
-| `"none"` | Nothing at all |
-| `"packages"` (default) | Package registries only (pip, npm, cargo, Go and Maven), so installs work |
-| `"full"` | The whole internet |
-
-Perseus tests the network from inside a real sandbox at startup. If programs can reach more than the setting allows, it turns the code runner off.
-
-To check where your code actually runs, run `~/.local/bin/uv run python -m perseus.sandbox.doctor`. It creates one sandbox with your key, shows its E2B id and what it reports about itself, then deletes it. Every run is also logged in `logs/sandbox.log`, without the code or its output.
-
-## The Windows VM (RCE addon)
-
-`run_windows_code` runs the model's code in a real Windows 11 VM, for anything Linux can't do: Win32 and .NET APIs, the registry, PowerShell, cmd, Windows DLLs. It talks to the **WindowsRCE sandbox API**, which runs on a Windows PC with VirtualBox and puts the VM back on a clean snapshot after every run. The model gets the outcome (`ok`, `compile_error`, `runtime_error` or `timeout`), the exit code, stdout and stderr, and any files it asked to collect.
-
-Collected files come back as exact bytes, text or binary. To give you something the program built, the model collects its path (say `bin/Release/net10.0/win-x64/publish/app.exe`) and passes the ref the run reports (`windows:bin/Release/net10.0/win-x64/publish/app.exe`) to `output_file`. The file then shows up under the answer as a download card with its size and SHA-256, marked as an executable when it runs code. Unsigned executables get a warning from your browser or SmartScreen when you download or open them; that's expected for a fresh build.
-
-Languages: Python, Node.js, Windows PowerShell 5.1, cmd and C# (.NET 10).
-
-```
-run_windows_code ─ctx.windows─▶ RCE relay ─X-API-Key─▶ WindowsRCE API (your PC) ─▶ Windows VM
-                                 (on the GPU box; holds the key, enforces your settings)
-```
-
-The relay is a separate process, like the code runner's broker: the key never enters the process that runs tools, and the settings below are enforced there whatever the model asks for.
-
-To set it up:
-
-1. On the Windows PC, start the API and leave the window open:
-   ```powershell
-   cd "$HOME\VirtualBox VMs\rce-sandbox"
-   powershell -ExecutionPolicy Bypass -File .\start-api.ps1
-   ```
-2. Make the API reachable from the GPU box. The simplest way is the SSH session you already use for the dashboard, with a reverse forward added:
-   ```bash
-   ssh -L 8080:127.0.0.1:8080 -R 8765:127.0.0.1:8765 you@your-gpu-box
-   ```
-   The API then answers at `http://127.0.0.1:8765` on the box, and it can stay bound to `127.0.0.1` on the PC (safer: code inside the VM can't reach it on the host-only network). The tool works only while that SSH session is open.
-3. Add the API key to `Config/tooling.toml`:
-   ```toml
-   [windows_rce]
-   api_key = "your WindowsRCE X-API-Key"
-   ```
-4. Run `bash preflight.sh`, then `python3 perseus.py`. On startup you'll see `✓ Windows VM: …`, or a line saying why it's off. If the tunnel isn't up yet, it says so, and runs work as soon as it is.
-
-The settings in `[windows_rce]`:
-
-| Setting | Default | What it does |
+| Addon | What the model gets | Set-up |
 | --- | --- | --- |
-| `url` | `http://127.0.0.1:8765` | Where the API answers, as seen from the GPU box |
-| `allow_network` | `false` | Lets the model connect the VM to the internet for a run (`pip`, `npm`, NuGet). Separate from the Internet Access switch |
-| `allow_keep_state` | `true` | Lets the model keep the VM's state between calls (install once, then use). Kept state is thrown away by `reset_windows_vm`, after `idle_revert_s` unused, and when Perseus stops |
-| `run_timeout_s` | `120` | The longest run the model may ask for (up to 600) |
-| `max_output_kb` | `64` | stdout + stderr kept per run |
-| `max_collect_kb` | `512` | Total size of collected text the model can read per run |
-| `max_download_mb` | `64` | Total size of collected files (text or binary) a run can hand to `output_file` for you to download (up to 128; `0` turns downloads off) |
-| `idle_revert_s` | `600` | How long a VM with kept state may sit unused before it's reset |
+| `e2b_code_environment` | `run_code`: builds and runs a program in a fresh Linux sandbox on [E2B](https://e2b.dev), deleted straight afterwards. Nothing runs on your GPU server. | [perseus/addons/e2b_code_environment/README.md](perseus/addons/e2b_code_environment/README.md) |
+| `test_windows_sandbox` | `run_windows_code` and `reset_windows_vm`: runs a program in your own disposable Windows 11 VM, for Win32 and .NET APIs, the registry, PowerShell, cmd and Windows DLLs; built files (an `.exe`, say) come back as downloads. | [perseus/addons/test_windows_sandbox/README.md](perseus/addons/test_windows_sandbox/README.md) |
 
-Programs run as a local administrator over SSH with no visible desktop, so GUI windows never appear and anything waiting for keyboard input hangs until the timeout. The API runs one job at a time; other calls wait their turn. Every run is logged in `logs/windows_rce.log` with its job id and outcome, never the code or its output.
+Each addon's section in `Config/tooling.toml` starts with its `api_key`; the key is read only by the addon's own process, never by `perseus.py` or the model. On start-up you'll see `✓ code runner: …` and `✓ Windows VM: …`, or a line saying why each is off.
+
+Adding one of your own is dropping a folder into `perseus/addons/` (copy [`_example/`](perseus/addons/_example/)); no file outside that folder changes. [docs/addons.md](docs/addons.md) explains what Perseus does with such a folder and what it must contain, including the `agent_use` text every addon has to give the model.
 
 ## Configuration
 
@@ -408,7 +337,7 @@ These are the settings you're most likely to change:
 | `[server] public` | settings | `true` opens the dashboard to your network instead of only the box. Anyone with the link can then use your model. |
 | `[search] engines` | settings | Which search engines to ask |
 | `[limits] research_depth` | settings | `quick` (5), `standard` (20) or `deep` (50) web lookups per answer. Lower on small GPUs. |
-| `[code_runner] api_key` | tooling | Your E2B key; turns the code runner on |
+| `[e2b_code_environment] api_key` | tooling | Your E2B key; turns the code runner on |
 
 <details>
 <summary><b>All the other settings</b></summary>
@@ -426,13 +355,13 @@ These are the settings you're most likely to change:
 | `[limits] fetch_timeout_s` | `15` | Seconds per web page |
 | `[limits] max_response_kb` | `2048` | Largest web page Perseus will read |
 | `[limits] warn_download_minutes` | `20` | Warn when the download will take longer |
-| `[code_runner] enabled` | `true` | Does nothing until `api_key` is set |
-| `[code_runner] e2b_template` | `""` | The sandbox image; `""` is E2B's standard one |
-| `[code_runner] network` | `packages` | `none`, `packages` or `full` |
-| `[code_runner] languages` | `[]` | Empty means every installed language, or a list like `["python", "rust"]` |
-| `[code_runner] build_timeout_s` | `120` | 5–180 |
-| `[code_runner] run_timeout_s` | `30` | 1–120 |
-| `[code_runner] max_output_kb` | `64` | Output kept per run |
+| `[e2b_code_environment] enabled` | `true` | Does nothing until `api_key` is set |
+| `[e2b_code_environment] e2b_template` | `""` | The code runner's sandbox image; `""` is E2B's standard one |
+| `[e2b_code_environment] network` | `packages` | `none`, `packages` or `full` |
+| `[e2b_code_environment] languages` | `[]` | Empty means every installed language, or a list like `["python", "rust"]` |
+| `[e2b_code_environment] build_timeout_s` | `120` | 5–180 |
+| `[e2b_code_environment] run_timeout_s` | `30` | 1–120 |
+| `[e2b_code_environment] max_output_kb` | `64` | Output kept per run |
 
 To keep your config somewhere else, pass `--config DIR` to both `preflight.sh` and `perseus.py`.
 
@@ -540,7 +469,7 @@ perseus/                     the checkout
 │   ├── model/               starting vLLM and talking to it
 │   ├── tools/               one file per agent function
 │   ├── safety/              web gateway, network guard, self-test
-│   ├── sandbox/             the code runner
+│   ├── addons/              each addon in its own folder: the code runner, the Windows VM, _example/
 │   ├── web/                 the dashboard (static/ is the page itself)
 │   └── pipelines/           pipeline definitions (not running yet)
 ├── docs/                    images for this README
@@ -549,7 +478,7 @@ perseus/                     the checkout
 <data directory>/perseus/    e.g. /workspace/perseus
 ├── weights/                 the downloaded model
 ├── perseus.resolved.toml    what preflight decided
-├── logs/                    preflight, model server, search, sandbox, gateway
+├── logs/                    preflight, model server, search, gateway, one log per addon
 ├── searxng/                 the search engine
 └── run/                     per-boot keys and the dashboard link (cleared on shutdown)
 ```
@@ -561,7 +490,8 @@ The one large thing in the checkout is the Python environment, `.venv` (about 10
 The tests need no GPU, network or extra packages, and take under a minute:
 
 ```bash
-python3 -m unittest discover -s tests -t .
+python3 -m unittest discover -s tests -t .            # the core
+python3 -m unittest discover -s perseus/addons -t .   # every addon's own tests
 ```
 
 To try the preflight checks without a GPU, run them against a recorded machine and model:
@@ -582,7 +512,7 @@ If you change the config format, edit `Config/templates/` and `perseus/config.py
 To test the code runner against E2B (this uses your key and costs a few cents):
 
 ```bash
-PERSEUS_TEST_E2B=1 ~/.local/bin/uv run python -m unittest tests.test_sandbox_conformance
+PERSEUS_TEST_E2B=1 ~/.local/bin/uv run python -m unittest perseus.addons.e2b_code_environment.tests.test_sandbox_conformance
 ```
 
 ## License

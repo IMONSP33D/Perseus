@@ -1,0 +1,6 @@
+[example]                    # one line saying what this addon's tools do
+api_key = "..."              # the service's key; read only by the addon's own process.
+                             # Leave as is to keep the addon off.
+enabled = true               # on by default; stays off (and hidden from the model) until api_key is set
+url = "http://127.0.0.1:9000"  # where the service answers, as seen from this box
+timeout_s = 30               # the longest call the model may ask for (1-300)

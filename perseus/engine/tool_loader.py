@@ -1,8 +1,9 @@
-"""Loads tool files from perseus/tools/ and reloads them when they change.
+"""Loads tool files from perseus/tools/ and every addon's tools/, and reloads them when they change.
 
 Before a file is imported, a static check refuses network, process and FFI
 libraries; a tool file that fails to import never takes the engine down.
 Reloads run before each answer, so editing a tool takes effect on the next turn.
+One ToolLoader watches one folder; `default_loader()` is the set of them, driven as one.
 """
 
 from __future__ import annotations
@@ -76,13 +77,43 @@ class ToolLoader:
         return f"{self.package}.{p.stem}"
 
 
-_default: ToolLoader | None = None
+class ToolLoaders:
+    """perseus/tools/ plus one loader per discovered addon's tools/, refreshed together."""
+
+    def __init__(self, loaders: list[ToolLoader]):
+        self.loaders = loaders
+
+    @classmethod
+    def all(cls, registry: Registry = REGISTRY) -> "ToolLoaders":
+        from perseus import addons
+        loaders = [ToolLoader(TOOLS_DIR, registry, "perseus.tools")]
+        loaders += [ToolLoader(a.tools_dir, registry, a.tools_package) for a in addons.discover()]
+        return cls(loaders)
+
+    def refresh(self) -> list[str]:
+        return [line for ld in self.loaders for line in ld.refresh()]
+
+    @property
+    def errors(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for ld in self.loaders:
+            out.update(ld.errors)
+        return out
+
+    def files(self) -> dict[Path, float]:
+        out: dict[Path, float] = {}
+        for ld in self.loaders:
+            out.update(ld.files())
+        return out
 
 
-def default_loader() -> ToolLoader:
+_default: ToolLoaders | None = None
+
+
+def default_loader() -> ToolLoaders:
     global _default
     if _default is None:
-        _default = ToolLoader()
+        _default = ToolLoaders.all()
     return _default
 
 

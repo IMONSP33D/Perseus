@@ -1,6 +1,6 @@
 # Review 2 of 4: tools, safety and sandbox
 
-Scope: `perseus/tools/` (the registry and the built-in tools), `perseus/safety/` (gateway, netpolicy, socketguard, htmltext, selftest), `perseus/sandbox/` and `perseus/search.py`.
+Scope: `perseus/tools/` (the registry and the built-in tools), `perseus/safety/` (gateway, netpolicy, socketguard, htmltext, selftest), `perseus/sandbox/` (since moved to `perseus/addons/e2b_code_environment/`; see `docs/addons.md`) and `perseus/search.py`.
 
 The main question for this segment was how easy it is to add a tool. Before this review, a new tool needed a hand-written JSON Schema, even for a one-argument function. Now a typed function with a docstring is enough.
 

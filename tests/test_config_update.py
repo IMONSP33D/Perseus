@@ -19,10 +19,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 TOKEN = "hf_" + "z" * 34
 E2B = "e2b_" + "q" * 30
 
-spec = importlib.util.spec_from_file_location("perseus_config_update", ROOT / "Config" / "update.py")
-update = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = update      # dataclasses look their module up by name
-spec.loader.exec_module(update)
+from tests.configs import update   # Config/update.py, loaded as a module
 
 
 def presplit_toml() -> str:
@@ -75,13 +72,15 @@ class FirstRun(Base):
     def test_copies_the_templates_private_and_says_what_to_fill_in(self):
         code, out = self.run_update()
         self.assertEqual(code, 0, out)
+        assembled = update.read_templates(self.templates)                  # the addons' sections appended
         for name in CONFIG_FILES:
-            self.assertEqual((self.dir / name).read_text(), (self.templates / name).read_text())
+            self.assertEqual((self.dir / name).read_text(), assembled[name].text)
             self.assertEqual(stat.S_IMODE((self.dir / name).stat().st_mode), 0o600)
             self.assertTrue((self.dir / ".base" / name).is_file())
+        self.assertIn("[e2b_code_environment]", (self.dir / "tooling.toml").read_text())
         self.assertIn("still to fill in", out)
         self.assertIn("[model] id", out)
-        self.assertIn("[code_runner] api_key", out)
+        self.assertIn("[e2b_code_environment] api_key", out)
         self.assertEqual(self.backups(), [])                           # nothing of yours to back up yet
 
     def test_running_again_changes_nothing(self):
@@ -105,7 +104,7 @@ class Migration(Base):
         self.assertEqual(self.value("provider.toml", "model", "id"), "Qwen/Qwen3-32B")
         self.assertEqual(self.value("provider.toml", "secrets", "hf_token"), TOKEN)
         self.assertEqual(self.value("settings.toml", "server", "port"), 9090)
-        self.assertEqual(self.value("tooling.toml", "code_runner", "api_key"), E2B)   # moved beside its tool
+        self.assertEqual(self.value("tooling.toml", "e2b_code_environment", "api_key"), E2B)   # moved beside its tool
         self.assertNotIn("code_runner_api_key", (self.dir / "provider.toml").read_text())
         self.assertIn("renamed; your value kept", out)
         # the old file is gone from where people would edit it, but kept in the backup
@@ -114,7 +113,7 @@ class Migration(Base):
         self.assertEqual((self.dir / ".perseus-data").read_text(), "/data/perseus\n")
         # and Perseus reads the result
         cfg = load(self.dir)
-        self.assertEqual((cfg["model"]["id"], cfg["server"]["port"], cfg["code_runner"]["api_key"]),
+        self.assertEqual((cfg["model"]["id"], cfg["server"]["port"], cfg["e2b_code_environment"]["api_key"]),
                          ("Qwen/Qwen3-32B", 9090, E2B))
         for secret in (TOKEN, E2B):
             self.assertNotIn(secret, out)                              # secrets are never printed
@@ -124,7 +123,7 @@ class Migration(Base):
         legacy.write_text(presplit_toml().replace('network = "packages"', "internet = true"))
         code, out = self.run_update("--from", str(legacy))
         self.assertEqual(code, 0, out)
-        self.assertEqual(self.value("tooling.toml", "code_runner", "network"), "full")
+        self.assertEqual(self.value("tooling.toml", "e2b_code_environment", "network"), "full")
 
 
 class Updates(Base):
@@ -145,7 +144,7 @@ class Updates(Base):
             f.write_text(text.replace('network = "packages"', "internet = false"))
         code, out = self.run_update()
         self.assertEqual(code, 0, out)
-        self.assertEqual(self.value("tooling.toml", "code_runner", "network"), "packages")
+        self.assertEqual(self.value("tooling.toml", "e2b_code_environment", "network"), "packages")
 
     def test_new_keys_and_changed_defaults_arrive_your_values_stay(self):
         self.edit_template("settings.toml", "warn_download_minutes = 20",
@@ -160,7 +159,7 @@ class Updates(Base):
         self.assertEqual(self.value("settings.toml", "server", "port"), 9090)
         self.assertEqual(self.value("provider.toml", "model", "id"), "Qwen/Qwen3-32B")
         self.assertEqual(self.value("provider.toml", "secrets", "hf_token"), TOKEN)
-        self.assertEqual(self.value("tooling.toml", "code_runner", "api_key"), E2B)
+        self.assertEqual(self.value("tooling.toml", "e2b_code_environment", "api_key"), E2B)
         self.assertIn("# a brand-new key", (self.dir / "settings.toml").read_text())   # docs arrive too
         self.assertIn("+ [limits] new_limit = 7", out)
         self.assertIn("~ [limits] fetch_timeout_s: 15 -> 25", out)

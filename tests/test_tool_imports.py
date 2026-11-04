@@ -6,6 +6,7 @@ import time
 import unittest
 from pathlib import Path
 
+from perseus import addons
 from perseus.engine.tool_loader import ToolLoader, import_problem
 from perseus.tools import TOOLS_DIR, Registry, load_builtin
 
@@ -19,15 +20,26 @@ class ToolFolder(unittest.TestCase):
 
     def test_one_file_per_tool(self):
         reg = load_builtin()
-        for name in reg.all_names():
+        native = sorted(p.stem for p in TOOLS_DIR.glob("[!_]*.py"))
+        self.assertEqual(native, ["calculator", "current_time", "fetch_url", "output_file", "web_search"])
+        for name in native:
             self.assertEqual(reg.loaded(name).source, f"perseus.tools.{name}", name)
-        self.assertEqual(reg.all_names(), ["calculator", "current_time", "fetch_url", "output_file",
-                                          "reset_windows_vm", "run_code", "run_windows_code", "web_search"])
-        # run_code needs the code sandbox and the *_windows_* tools the RCE addon's Windows VM,
-        # so they're hidden until the launcher provides them
-        self.assertEqual(reg.names(), ["calculator", "current_time", "fetch_url", "output_file", "web_search"])
+        # every addon's tools load too, from the addon's own tools/ folder, and stay hidden until the
+        # launcher provides the addon's capability
+        for a in addons.discover():
+            for p in a.tools_dir.glob("[!_]*.py"):
+                t = reg.loaded(p.stem)
+                self.assertIsNotNone(t, f"{a.name}/tools/{p.name} didn't load")
+                self.assertEqual(t.source, f"{a.tools_package}.{p.stem}")
+                self.assertEqual(t.requires, a.name, f"{p.name} must say requires={a.name!r}")
+        self.assertEqual(reg.names(), native)
         self.assertTrue(reg.get("fetch_url").lookup and reg.get("web_search").lookup)
         self.assertFalse(reg.get("calculator").lookup)
+
+    def test_addon_tool_files_pass_the_import_check(self):
+        for a in addons.discover():
+            for p in a.tools_dir.glob("*.py"):
+                self.assertIsNone(import_problem(p), f"{a.name}/tools/{p.name}")
 
     def test_banned_imports_detected(self):
         d = Path(tempfile.mkdtemp())

@@ -19,7 +19,7 @@ Rules every tool follows (the loader and tests/test_tool_imports.py check the fi
 the socket guard is the wall behind it):
   * no network or process libraries: web access only through `ctx.gateway`,
     search only through `ctx.search`, code execution only through `ctx.sandbox`
-    (or `ctx.windows` for the Windows VM addon)
+    (or `ctx.<addon>` for an addon's own service, named after its folder)
   * no file writes; return data, don't act
   * return a dict, list or string; raise ToolFailure with a message for the model
     (other exceptions reach the model only as their type name)
@@ -30,7 +30,7 @@ Reserved keys in a returned dict:
   status   an int is shown as the HTTP status in the feed
   feed     a card view for the tool feed (see engine.feed.clean_feed); never sent to the model
   file     a file handed to the user (see engine.feed.clean_file); never sent to the model
-  outputs  files the tool brought back, [{"ref": "windows:dist/app.exe", "data": b"..."}]: the engine keeps
+  outputs  files the tool brought back, [{"ref": "<origin>:dist/app.exe", "data": b"..."}]: the engine keeps
            the bytes for this chat (engine.outputs) so output_file(source=ref) can deliver them; never sent
            to the model, so say each file's ref in the result text instead
 
@@ -41,6 +41,7 @@ for that capability, so a box without the capability never shows the tool.
 
 Files here are loaded, and hot-reloaded when they change, by
 perseus.engine.tool_loader; files starting with "_" are skipped (see _example.py).
+Addons keep their tool files in perseus/addons/<name>/tools/, loaded the same way (see perseus.addons).
 """
 
 from __future__ import annotations
@@ -85,16 +86,32 @@ class Tool:
                                                  "parameters": parameters or self.parameters}}
 
 
-@dataclass
 class ToolContext:
-    """What a tool may use. Built by the engine; tools never construct clients."""
-    gateway: Any = None          # perseus.safety.gateway.Gateway
-    search: Any = None           # perseus.search.SearchClient
-    limits: dict = field(default_factory=dict)
-    engines: list[str] | None = None   # search engines chosen in the dashboard; None = all configured
-    sandbox: Any = None          # perseus.sandbox.client.SandboxClient, or None when the code runner is off
-    windows: Any = None          # perseus.addons.windows_rce.client.WindowsClient, or None when the RCE addon is off
-    outputs: Any = None          # perseus.engine.outputs.Outputs: this chat's collected files (set per call by the engine)
+    """What a tool may use. Built by the engine; tools never construct clients.
+
+    Fixed attributes are the engine's own services. Every addon that is up adds one more, named after
+    the addon: a tool that says `requires="my_addon"` reaches its service as `ctx.my_addon`.
+    An addon that is off reads as None."""
+
+    FIXED = ("gateway", "search", "limits", "engines", "outputs")
+
+    def __init__(self, gateway: Any = None, search: Any = None, limits: dict | None = None,
+                 engines: list[str] | None = None, outputs: Any = None, **addons: Any):
+        self.gateway = gateway          # perseus.safety.gateway.Gateway
+        self.search = search            # perseus.search.SearchClient
+        self.limits = limits if limits is not None else {}
+        self.engines = engines          # search engines chosen in the dashboard; None = all configured
+        self.outputs = outputs          # perseus.engine.outputs.Outputs: this chat's collected files (set per call)
+        self.addons: dict[str, Any] = dict(addons)   # addon name -> its client, or None when the addon is off
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_") or name in self.FIXED:
+            raise AttributeError(name)
+        return self.__dict__.get("addons", {}).get(name)
+
+    def with_outputs(self, outputs: Any) -> "ToolContext":
+        c = ToolContext(self.gateway, self.search, self.limits, self.engines, outputs, **self.addons)
+        return c
 
 
 @dataclass
@@ -104,6 +121,7 @@ class Capability:
     reaches_web: bool = False    # tools using it are web tools: gated by the Internet Access switch
     enums: dict[str, list[str]] = field(default_factory=dict)   # narrows these enum parameters, e.g. languages
     note: str = ""               # appended to the description of tools using it (e.g. the sandbox's network)
+    agent_use: str = ""          # the addon's standing guidance to the model, appended before `note`
 
 
 class Registry:
@@ -131,7 +149,13 @@ class Registry:
     # capabilities ------------------------------------------------------------
     def provide(self, name: str, *, reaches_web: bool = False, enums: dict[str, list[str]] | None = None,
                 note: str = "") -> None:
-        self._caps[name] = Capability(name, reaches_web, dict(enums or {}), note)
+        agent_use = self._caps[name].agent_use if name in self._caps else ""
+        self._caps[name] = Capability(name, reaches_web, dict(enums or {}), note, agent_use)
+
+    def describe(self, name: str, agent_use: str) -> None:
+        """Attach an addon's agent_use text to its capability; kept across provide() calls."""
+        if name in self._caps:
+            self._caps[name].agent_use = agent_use.strip()
 
     def withdraw(self, name: str) -> None:
         self._caps.pop(name, None)
@@ -177,7 +201,9 @@ class Registry:
 
     def description(self, t: Tool) -> str:
         cap = self._caps.get(t.requires) if t.requires else None
-        return f"{t.description} {cap.note}" if cap and cap.note else t.description
+        if not cap:
+            return t.description
+        return " ".join(x for x in (t.description, cap.agent_use, cap.note) if x)
 
     def specs(self, only: set[str] | None = None) -> list[dict]:
         out = []
@@ -307,7 +333,7 @@ def tool(name: str | Callable | None = None, *, description: str | None = None, 
 
 
 def load_builtin() -> Registry:
-    """Load every tool file in this folder into REGISTRY (once; later calls reload changed files)."""
+    """Load every tool file here and in each addon's tools/ into REGISTRY (once; later calls reload changed files)."""
     from perseus.engine.tool_loader import default_loader
     default_loader().refresh()
     return REGISTRY

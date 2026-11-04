@@ -28,7 +28,9 @@ import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
+from perseus.keys import Key, api_key_check, range_check  # noqa: F401 (Key is part of this module's API)
 
 REPO_ID_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[\w.-]+$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -41,33 +43,6 @@ class ConfigError(Exception):
     def __init__(self, problems: list[str]):
         self.problems = problems
         super().__init__("\n".join(problems))
-
-
-@dataclass(frozen=True)
-class Key:
-    types: tuple[type, ...]
-    default: Any = None
-    required: bool = False
-    choices: tuple | None = None
-    check: Callable[[Any], str | None] | None = None
-    secret: bool = False
-
-    def validate(self, value: Any) -> str | None:
-        # bool is a subclass of int in Python; never accept True for a number.
-        if isinstance(value, bool) and bool not in self.types:
-            return f"expected {self._type_names()}, got a boolean"
-        if not isinstance(value, self.types):
-            return f"expected {self._type_names()}, got {type(value).__name__} {value!r}"
-        if self.choices is not None and value not in self.choices:
-            return f"must be one of {', '.join(repr(c) for c in self.choices)}; got {value!r}"
-        if self.check is not None:
-            return self.check(value)
-        return None
-
-    def _type_names(self) -> str:
-        names = {str: "a string", int: "a whole number", float: "a number",
-                 bool: "true/false", list: "a list"}
-        return " or ".join(names.get(t, t.__name__) for t in self.types)
 
 
 def _repo_id(v: str) -> str | None:
@@ -123,39 +98,9 @@ def _engines(v: list) -> str | None:
     return None
 
 
-def _range(lo: int, hi: int) -> Callable[[Any], str | None]:
-    def check(v: Any) -> str | None:
-        return None if lo <= v <= hi else f"must be between {lo} and {hi}"
-    return check
-
-
-def _api_key(v: str) -> str | None:
-    if v and any(c.isspace() for c in v.strip()):
-        return "must be the key alone, with no spaces"
-    return None
-
-
-def _languages(v: list) -> str | None:
-    from perseus.sandbox.languages import LANGUAGES
-    bad = [x for x in v if x not in LANGUAGES]
-    return f"unknown language(s) {', '.join(map(str, bad))} (known: {', '.join(LANGUAGES)})" if bad else None
-
-
-def _rce_url(v: str) -> str | None:
-    from perseus.addons.windows_rce.upstream import check_url
-    from perseus.sandbox.backends import SandboxError
-    try:
-        check_url(v)
-    except SandboxError:
-        return "must be the API's address, like http://127.0.0.1:8765 (http or https, no path)"
-    return None
-
 
 # keys that changed: say what replaced them instead of just "unknown key"
-RENAMED = {("code_runner", "internet"): 'replaced by network = "none", "packages" or "full" (internet = true '
-                                        'is "full"; the default "packages" allows package installs only)',
-           ("code_runner", "key_file"): "replaced by [code_runner] api_key in tooling.toml",
-           ("secrets", "code_runner_api_key"): "moved to [code_runner] api_key in tooling.toml "
+RENAMED = {("secrets", "code_runner_api_key"): "moved to [e2b_code_environment] api_key in tooling.toml "
                                                "(bash Config/configuration.sh moves it for you)"}
 
 # The split config: which file each key belongs in (Config/templates/ has the same layout).
@@ -163,15 +108,7 @@ CONFIG_DIR = "Config"
 CONFIG_FILES = ("provider.toml", "settings.toml", "tooling.toml")
 UPDATE_HINT = "bash Config/configuration.sh"
 
-
-def home_file(section: str, key: str) -> str:
-    if section == "secrets" or (section, key) == ("model", "id"):
-        return "provider.toml"
-    if section in ("code_runner", "windows_rce"):
-        return "tooling.toml"
-    return "settings.toml"
-
-SCHEMA: dict[str, dict[str, Key]] = {
+CORE_SCHEMA: dict[str, dict[str, Key]] = {
     "model": {
         "id": Key((str,), required=True, check=_repo_id),
         "revision": Key((str,), "main"),
@@ -210,30 +147,41 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "max_response_kb": Key((int,), 2048, check=_positive),
         "warn_download_minutes": Key((int, float), 20, check=_positive),
     },
-    "code_runner": {
-        "api_key": Key((str,), "", check=_api_key, secret=True),   # read by the sandbox broker only
-        "enabled": Key((bool,), True),
-        "backend": Key((str,), "e2b", choices=("e2b",)),
-        "e2b_template": Key((str,), ""),
-        "network": Key((str,), "packages", choices=("none", "packages", "full")),
-        "languages": Key((list,), [], check=_languages),
-        "build_timeout_s": Key((int,), 120, check=_range(5, 180)),
-        "run_timeout_s": Key((int,), 30, check=_range(1, 120)),
-        "max_output_kb": Key((int,), 64, check=_range(4, 1024)),
-    },
-    "windows_rce": {             # the RCE addon: run_windows_code in a disposable Windows VM
-        "api_key": Key((str,), "", check=_api_key, secret=True),   # read by the RCE relay only
-        "enabled": Key((bool,), True),
-        "url": Key((str,), "http://127.0.0.1:8765", check=_rce_url),
-        "allow_network": Key((bool,), False),
-        "allow_keep_state": Key((bool,), True),
-        "run_timeout_s": Key((int,), 120, check=_range(1, 600)),
-        "max_output_kb": Key((int,), 64, check=_range(4, 1024)),
-        "max_collect_kb": Key((int,), 512, check=_range(0, 8192)),
-        "max_download_mb": Key((int,), 64, check=_range(0, 128)),
-        "idle_revert_s": Key((int,), 600, check=_range(30, 86400)),
-    },
 }
+
+# Every addon's [section] joins the schema here, so a new folder under perseus/addons/ is a known
+# section with no edit to this file. The addons import Key from this module, which is why this sits
+# after everything they need (the module is importable mid-way; the names above already exist).
+SCHEMA: dict[str, dict[str, Key]] = dict(CORE_SCHEMA)
+ADDON_SECTIONS: dict[str, str] = {}        # section -> addon label, for messages
+FORMER_SECTIONS: dict[str, str] = {}       # an addon's old section name -> its current name
+
+
+def _merge_addons() -> None:
+    from perseus import addons
+    for a in addons.discover():
+        SCHEMA[a.name] = dict(a.config)
+        ADDON_SECTIONS[a.name] = a.label
+        for old in a.former_names:
+            FORMER_SECTIONS[old] = a.name
+        for key, message in a.renamed_keys.items():
+            RENAMED[(a.name, key)] = message
+
+
+_merge_addons()
+
+
+def home_file(section: str, key: str) -> str:
+    if section == "secrets" or (section, key) == ("model", "id"):
+        return "provider.toml"
+    if section in ADDON_SECTIONS:
+        return "tooling.toml"
+    return "settings.toml"
+
+
+def secret_placeholder(value: str) -> bool:
+    """Template values that mean "not set yet": "..." or anything ending in it (e2b_..., hf_...)."""
+    return value.strip() == "" or value.strip().endswith("...")
 
 
 @dataclass
@@ -383,7 +331,10 @@ def validate(raw: dict, *, text: str = "", name: str = "perseus.toml", texts: di
         return f"{label} [{section}]" + (f" {key}" if key else "")
 
     for section, value in raw.items():
-        if section not in SCHEMA:
+        if section in FORMER_SECTIONS:
+            problems.append(f"{where(section)}: this section is now [{FORMER_SECTIONS[section]}] "
+                            f"({UPDATE_HINT} renames it for you)")
+        elif section not in SCHEMA:
             problems.append(f"{where(section)}: unknown section (known: {', '.join(SCHEMA)})")
         elif not isinstance(value, dict):
             problems.append(f"{where(section)}: must be a [section], not a value")
@@ -434,12 +385,14 @@ def validate(raw: dict, *, text: str = "", name: str = "perseus.toml", texts: di
         if data["secrets"]["hf_token"] in ("", "hf_..."):
             data["secrets"]["hf_token"] = ""
             warnings.append("no HF token set: fine for public repos; gated or private repos will fail the check")
-        key = data["code_runner"]["api_key"].strip()
-        data["code_runner"]["api_key"] = "" if key in ("", "e2b_...") else key
-        if data["code_runner"]["enabled"] and not data["code_runner"]["api_key"]:
-            warnings.append("no [code_runner] api_key set in tooling.toml: the code runner (run_code) stays off")
-        rce = data["windows_rce"]["api_key"].strip()
-        data["windows_rce"]["api_key"] = "" if rce.endswith("...") else rce
+        for section, keys in SCHEMA.items():
+            for key, spec in keys.items():
+                if spec.secret and (section, key) != ("secrets", "hf_token"):
+                    v = str(data[section][key])
+                    data[section][key] = "" if secret_placeholder(v) else v.strip()
+            if section in ADDON_SECTIONS and section in raw and data[section].get("enabled") \
+                    and "api_key" in keys and not data[section]["api_key"]:   # its section is there, its key isn't
+                warnings.append(f"no [{section}] api_key set in tooling.toml: {ADDON_SECTIONS[section]} stays off")
 
     if problems:
         raise ConfigError(problems)

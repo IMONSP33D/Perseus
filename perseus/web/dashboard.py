@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from perseus import __version__
+from perseus import addons
 from perseus.engine.loop import Engine, EngineSettings, TurnOptions
 from perseus.engine.feed import Feed, ToolEvent
 from perseus.engine.session import Recorder
@@ -34,16 +35,20 @@ PERSONAS = {
 CREATIVITY = {"precise": 0.2, "balanced": 0.7, "creative": 1.0}
 LENGTH = {"short": 1024, "medium": 4096, "long": 16384}
 THINKING = ("off", "low", "medium", "high", "max")
-# Tools that ship with Perseus, and the one-line blurb the Agent Tools page shows for each. Any other
-# tool file in perseus/tools/ is an addon; its blurb is the first sentence of its description.
+# Tools that ship in perseus/tools/, and the one-line blurb the Agent Tools page shows for each. A tool from
+# an addon (perseus/addons/<name>/tools/) is grouped under that addon; its blurb is its addon's summary.
 NATIVE_TOOLS = {
     "calculator": "Increases mathematical precision",
     "current_time": "Checks the current time",
     "output_file": "Native file output",
     "web_search": "Basic research snippets",
     "fetch_url": "Grabs single page content",
-    "run_code": "Allows minimal code execution",
 }
+ADDON_PACKAGE = "perseus.addons."
+
+
+def firstSentence(text: str) -> str:
+    return (text or "").split(". ")[0].rstrip(".") + ("." if text else "")
 # Thinking budget per answer, on top of Length. Past it Perseus wraps up (see Engine.run_turn), so
 # the levels mean something even for models whose template has no effort setting (Qwen3).
 # Max: thinking may use everything a request allows (half the context) minus the answer's room.
@@ -286,6 +291,11 @@ class Dashboard:
                 for t in st.tools:
                     used.setdefault(t, []).append({"pipeline": pl.name, "stage": st.id, "role": st.role})
         out = []
+        addon_meta = {a.name: {"name": a.name, "label": a.label, "summary": a.summary, "agent_use": a.agent_use,
+                               "up": a.name in self.registry._caps} for a in addons.discover()}
+        for folder, why in addons.errors().items():
+            addon_meta[folder] = {"name": folder, "label": folder, "summary": "", "agent_use": "", "up": False,
+                                  "error": why}
         for name in self.registry.names():
             t = self.registry.get(name)
             props = (t.parameters or {}).get("properties") or {}
@@ -294,13 +304,16 @@ class Dashboard:
                        "required": k in required,
                        "description": (v.get("description") or "") if isinstance(v, dict) else ""}
                       for k, v in props.items()]
-            native = t.source == f"perseus.tools.{name}" and name in NATIVE_TOOLS
+            addon = t.source[len(ADDON_PACKAGE):].split(".")[0] if t.source.startswith(ADDON_PACKAGE) else ""
+            native = t.source == f"perseus.tools.{name}"
+            short = NATIVE_TOOLS.get(name, "") if native else (addon_meta.get(addon, {}).get("summary", "") or "")
             out.append({"name": name, "description": self.registry.description(t), "params": params, "web": self.registry.is_web(t),
                         "timeout_s": t.timeout_s, "source": t.source, "requires": t.requires,
-                        "native": native, "short": NATIVE_TOOLS[name] if native else "",
+                        "native": native, "addon": addon, "short": short or firstSentence(t.description),
                         "used_by": used.get(name, [])})
         errors = self.tool_errors() if self.tool_errors else {}
-        return {"tools": out, "errors": [{"file": f, "error": e} for f, e in sorted(errors.items())]}
+        return {"tools": out, "errors": [{"file": f, "error": e} for f, e in sorted(errors.items())],
+                "addons": list(addon_meta.values())}
 
     # ------------------------------------------------------------------ turns
     def turn_options(self) -> TurnOptions:

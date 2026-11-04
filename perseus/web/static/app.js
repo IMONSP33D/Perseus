@@ -1172,9 +1172,9 @@
   }
 
   // ------------------------------------------------------------------ Agent Tools
-  // Read-only: what the model can call. Native tools ship with Perseus; addons are tool files you add
-  // to perseus/tools/. Data from /api/tools.
-  const tools = { list: null, errors: [], loading: false, error: null, sel: store.get('tool', null), filter: '' };
+  // Read-only: what the model can call. Native tools ship in perseus/tools/; each addon
+  // (perseus/addons/<name>/) gets its own group, shown even while it's off. Data from /api/tools.
+  const tools = { list: null, errors: [], addons: [], loading: false, error: null, sel: store.get('tool', null), filter: '' };
   const firstSentence = (text) => (text || '').split(/(?<=\.)\s(?=[A-Z])/)[0];
   const toolShort = (t) => t.short || firstSentence(t.description);
 
@@ -1184,7 +1184,7 @@
     if (!tools.list) renderTools();
     try {
       const t = await api('GET', '/api/tools');
-      tools.list = t.tools; tools.errors = t.errors || [];
+      tools.list = t.tools; tools.errors = t.errors || []; tools.addons = t.addons || [];
     } catch (e) { tools.error = e.message; }
     tools.loading = false;
     renderTools(); renderNav();
@@ -1213,16 +1213,22 @@
       renderTools();
       const again = $('tool-filter'); again.focus(); again.setSelectionRange(at, at);
     });
-    const section = (title, list) => {
+    const section = (title, list, note) => {
       const shown = list.filter(match);
       return h('section', { class: 'tool-group', 'aria-label': title },
         h('h2', {}, title, h('span', { class: 'count-badge', text: String(list.length) })),
+        note ? h('p', { class: 'tool-note', text: note }) : null,
         shown.length
           ? h('div', { class: 'tool-grid' }, shown.map((t) => h('button', { type: 'button', class: 'tool-tile', 'aria-pressed': String(sel && sel.name === t.name),
             onclick: () => { tools.sel = t.name; store.set('tool', t.name); renderTools(); } },
             h('span', { class: 'name', text: t.name }), h('span', { class: 'short', text: toolShort(t) }))))
-          : h('p', { class: 'tool-none', text: q || list.length ? 'No match.' : 'None installed.' }));
+          : h('p', { class: 'tool-none', text: q || list.length ? 'No match.' : (note ? 'Off: its tools are hidden from the model.' : 'None installed.') }));
     };
+    // one group per addon, by its label; a tool from an addon the server doesn't list falls into "Addon Tools"
+    const known = new Set(tools.addons.map((a) => a.name));
+    const addonGroups = tools.addons.map((a) => section(a.label || a.name, all.filter((t) => t.addon === a.name),
+      a.error ? 'Skipped: ' + a.error : a.summary));
+    const stray = all.filter((t) => !t.native && !known.has(t.addon));
     body.replaceChildren(
       ...tools.errors.map((e) => h('div', { class: 'callout', role: 'alert' }, icon('alert'),
         h('div', {}, h('strong', { class: 'mono', text: e.file }), ' wasn’t loaded: ' + e.error))),
@@ -1230,7 +1236,8 @@
       h('div', { class: 'tools-layout' },
         h('div', { class: 'tool-groups' },
           section('Native Tools', all.filter((t) => t.native)),
-          section('Addon Tools', all.filter((t) => !t.native))),
+          ...addonGroups,
+          stray.length ? section('Addon Tools', stray) : null),
         sel ? toolSpec(sel) : null));
   }
 
