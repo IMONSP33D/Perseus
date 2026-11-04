@@ -22,7 +22,9 @@ Policy, enforced here whatever the model asks for:
                   idle_revert_s without use, and when the relay stops
   * time          timeout_s is capped at run_timeout_s
   * output        stdout and stderr capped at max_output_kb (head and tail kept);
-                  collected files capped at max_collect_kb in total
+                  collected text shown to the model capped at max_collect_kb in total
+  * downloads     every collected file's exact bytes (text or binary, such as a built .exe) passed on
+                  as base64 for output_file, up to max_download_mb in total per run
 
 The log (logs/windows_rce.log) records which API and key (as a fingerprint) the relay uses,
 then each run's job id, language, outcome and timing. Never the code or its output.
@@ -77,6 +79,7 @@ class RelaySettings:
     run_timeout_s: int = 120
     max_output_kb: int = 64
     max_collect_kb: int = 512
+    max_download_mb: int = 64
     idle_revert_s: int = 600
 
     @classmethod
@@ -88,6 +91,7 @@ class RelaySettings:
                    run_timeout_s=int(cfg.get("run_timeout_s", d.run_timeout_s)),
                    max_output_kb=int(cfg.get("max_output_kb", d.max_output_kb)),
                    max_collect_kb=int(cfg.get("max_collect_kb", d.max_collect_kb)),
+                   max_download_mb=int(cfg.get("max_download_mb", d.max_download_mb)),
                    idle_revert_s=int(cfg.get("idle_revert_s", d.idle_revert_s)))
 
 
@@ -154,7 +158,8 @@ class Relay:
         s = self.s
         return {"backend": "windows_rce", "languages": list(LANGUAGES),
                 "limits": {"run_timeout_s": s.run_timeout_s, "max_output_kb": s.max_output_kb,
-                           "max_collect_kb": s.max_collect_kb, "idle_revert_s": s.idle_revert_s},
+                           "max_collect_kb": s.max_collect_kb, "max_download_mb": s.max_download_mb,
+                           "idle_revert_s": s.idle_revert_s},
                 "allow_network": s.allow_network, "allow_keep_state": s.allow_keep_state,
                 "dirty": self.dirty,
                 **{k: v for k, v in self.state.items() if k != "starting"}}
@@ -272,8 +277,10 @@ class Relay:
         return out
 
     def collected(self, blobs: dict) -> tuple[list[dict], list[str]]:
-        """Collected files as text (capped) or, when binary, just their name and size."""
+        """Collected files: text (capped) or just name and size for the model, plus each file's
+        exact bytes as base64 ("b64") for output_file while the max_download_mb budget lasts."""
         budget = self.s.max_collect_kb * 1024
+        download = self.s.max_download_mb * 1024 * 1024
         files, missing = [], []
         for path, b64 in list(blobs.items())[:MAX_COLLECT]:
             try:
@@ -281,7 +288,7 @@ class Relay:
             except (ValueError, TypeError):
                 missing.append(str(path))
                 continue
-            entry: dict = {"path": str(path), "bytes": len(data)}
+            entry: dict = {"path": str(path).replace("\\", "/"), "bytes": len(data)}
             text = None
             if b"\x00" not in data[:8192]:
                 try:
@@ -298,6 +305,11 @@ class Relay:
                 if cut:
                     entry["cut"] = True
                 budget -= len(shown.encode())
+            if len(data) <= download:
+                entry["b64"] = b64 if isinstance(b64, str) else base64.b64encode(data).decode()
+                download -= len(data)
+            else:
+                entry["too_large"] = True       # over this run's download budget: the model is told why
             files.append(entry)
         return files, missing
 

@@ -247,6 +247,20 @@ class RelayShape(unittest.TestCase):
         self.assertTrue(files["late.txt"]["omitted"])          # the budget ran out
         self.assertEqual(out["missing"], ["gone.txt"])
 
+    def test_collected_bytes_pass_through_for_downloads(self):
+        exe = b"MZ\x90\x00" + bytes(range(256)) * 8
+        out = relay().shape(self.req, {"exit_code": 0, "collected_b64": {
+            "publish\\app.exe": b64(exe), "notes.txt": b64(b"hi")}})
+        files = {f["path"]: f for f in out["files"]}
+        self.assertEqual(base64.b64decode(files["publish/app.exe"]["b64"]), exe)   # exact, slashes normalised
+        self.assertTrue(files["publish/app.exe"]["binary"])
+        self.assertEqual(base64.b64decode(files["notes.txt"]["b64"]), b"hi")
+
+    def test_download_budget(self):
+        out = relay(max_download_mb=0).shape(self.req, {"exit_code": 0, "collected_b64": {"app.exe": b64(b"MZ\x00")}})
+        self.assertTrue(out["files"][0]["too_large"])
+        self.assertNotIn("b64", out["files"][0])
+
 
 # ---------------------------------------------------------------------- relay + client over HTTP
 class RelayAndClient(unittest.TestCase):
@@ -274,6 +288,21 @@ class RelayAndClient(unittest.TestCase):
         self.assertEqual((r["status"], r["stdout"], r["vm_state"]), ("ok", "hi\n", "reverted"))
         sent = self.api.requests[-1][1]
         self.assertEqual((sent["revert"], sent["network"]), (True, False))
+
+    def test_a_built_exe_reaches_output_file_byte_for_byte(self):
+        from perseus.engine.outputs import Outputs
+        from perseus.tools.output_file import output_file
+        from perseus.tools.run_windows_code import run_windows_code
+        exe = b"MZ\x90\x00" + bytes(range(256)) * 4096          # 1 MB, every byte value
+        self.api.result = {**self.api.result, "collected_b64": {"publish/app.exe": b64(exe)}}
+        store = Outputs()
+        ctx = ToolContext(windows=self.client, outputs=store)
+        r = run_windows_code(ctx, "csharp", "x", command="dotnet publish -c Release -o publish",
+                             collect=["publish/app.exe"])
+        for o in r["outputs"]:                                  # what the engine does with the reserved key
+            store.add(o["ref"], o["data"])
+        got = output_file(ctx, "app.exe", source="windows:publish/app.exe")
+        self.assertEqual(got["file"]["data"], exe)
 
     def test_policy_refusals_reach_the_model_as_plain_messages(self):
         with self.assertRaises(ToolFailure) as c:
@@ -425,6 +454,19 @@ class WindowsTools(unittest.TestCase):
         self.assertEqual(out["feed"]["pill"], "Program OK")
         self.assertIn("job j9", out["feed"]["detail"])
         self.assertEqual(out["feed"]["summary"], "Windows · Python · 1 line")
+
+    def test_collected_bytes_become_outputs_with_refs(self):
+        exe = b"MZ\x90\x00\xff\xfe" * 100
+        out = self.mod.run_windows_code(self.ctx({"status": "ok", "exit_code": 0, "stdout": "", "stderr": "",
+                                                  "vm_state": "reverted", "files": [
+                                                      {"path": "publish/app.exe", "bytes": len(exe), "binary": True,
+                                                       "b64": base64.b64encode(exe).decode()},
+                                                      {"path": "big.iso", "bytes": 9, "binary": True, "too_large": True}]}),
+                                        "csharp", "x", collect=["publish/app.exe", "big.iso"])
+        self.assertEqual(out["outputs"], [{"ref": "windows:publish/app.exe", "data": exe}])
+        self.assertIn('output_file source="windows:publish/app.exe"', out["text"])
+        self.assertIn("big.iso: binary, 9 bytes (not shown); too large", out["text"])
+        self.assertNotIn(base64.b64encode(exe).decode()[:40], out["text"] + json.dumps(out["feed"]))
 
     def test_failure_headlines(self):
         r = self.mod.run_windows_code(self.ctx({"status": "runtime_error", "exit_code": 1, "stdout": "",

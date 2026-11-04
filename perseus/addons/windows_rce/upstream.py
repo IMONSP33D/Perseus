@@ -24,6 +24,7 @@ from perseus.sandbox.backends import SandboxError, fingerprint, tooling_file
 SECTION = "windows_rce"
 SECRET_KEY = "api_key"
 PLACEHOLDER = "..."
+MAX_RESPONSE = 192 * 1024 * 1024   # a run's JSON, collected files as base64 included (max_download_mb <= 128)
 
 
 def read_secret(config_path: str | Path) -> str:
@@ -67,7 +68,7 @@ class Upstream:
                                      headers={"X-API-Key": self.key, "Content-Type": "application/json"})
         try:
             with self._opener.open(req, timeout=timeout) as resp:
-                return json.loads(resp.read(64 * 1024 * 1024) or b"{}")
+                return json.loads(resp.read(MAX_RESPONSE) or b"{}")
         except urllib.error.HTTPError as e:
             raise _translate_http(e)
         except (urllib.error.URLError, ConnectionError, TimeoutError) as e:

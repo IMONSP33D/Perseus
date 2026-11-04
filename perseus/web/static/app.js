@@ -459,7 +459,8 @@
   }
 
   // Files the model handed over with output_file: a card each, under the answer.
-  // The content is fetched on demand and only ever shown as text (Preview) or downloaded.
+  // Text files are fetched on demand and only ever shown as text (Preview) or downloaded.
+  // Binary files (an .exe a program built) are download-only, with their SHA-256 on the card.
   const fileUrl = (cid, f) => `/api/chats/${encodeURIComponent(cid)}/files/${encodeURIComponent(f.id)}`;
   async function fileContent(cid, f) {
     const key = cid + ':' + f.id;
@@ -475,11 +476,11 @@
   }
   function fileCard(cid, m, f) {
     const key = cid + ':' + f.id;
-    const open = !!ui.fileOpen[key];
-    const meta = [f.language && f.language !== 'text' ? f.language : null,
-      f.lines != null ? plural(f.lines, 'line') : null,
+    const open = !!ui.fileOpen[key] && !f.binary;
+    const meta = [f.binary ? null : (f.language && f.language !== 'text' ? f.language : null),
+      !f.binary && f.lines != null ? plural(f.lines, 'line') : null,
       f.bytes != null ? fileSize(f.bytes) : null].filter(Boolean).join(' · ');
-    const previewBtn = h('button', { type: 'button', class: 'btn', 'aria-expanded': String(open),
+    const previewBtn = f.binary ? null : h('button', { type: 'button', class: 'btn', 'aria-expanded': String(open),
       'aria-label': `${open ? 'Hide' : 'Preview'} ${f.name}`,
       onclick: async () => {
         ui.fileOpen[key] = !open;
@@ -488,6 +489,7 @@
         }
         replaceMessage(m);
       } }, icon('eye'), h('span', { text: open ? 'Hide' : 'Preview' }));
+    const copyBtn = f.binary ? null : copyButton(() => fileContent(cid, f), `Copy ${f.name}`, 'btn');
     const download = h('a', { class: 'btn', href: fileUrl(cid, f), download: f.name, 'aria-label': `Download ${f.name}` },
       icon('download'), h('span', { text: 'Download' }));
     const text = ui.fileText[key];
@@ -495,14 +497,23 @@
       : typeof text === 'string' ? h('div', { class: 'file-preview' }, codeBlock(text, f.language, true))
       : text && text.error ? h('p', { class: 'file-desc', text: `Couldn't load the file: ${text.error}` })
       : h('p', { class: 'file-desc', text: 'Loading…' });
+    const hash = f.binary && f.sha256
+      ? h('p', { class: 'file-hash' },
+          h('span', { text: 'SHA-256 ' }),
+          h('code', { class: 'mono', title: f.sha256, text: f.sha256.slice(0, 16) + '…' }),
+          copyButton(() => f.sha256, `Copy the SHA-256 of ${f.name}`, 'btn file-hash-copy'))
+      : null;
     return h('div', { class: 'file-card' },
       h('div', { class: 'file-head' },
         withClass(icon('file'), 'file-icon'),
         h('div', { class: 'file-info' },
-          h('span', { class: 'file-name', text: f.name }),
+          h('span', { class: 'file-name' }, f.name,
+            f.executable ? h('span', { class: 'tpill flag file-exec', title: 'Runs code when opened. Check the hash before you run it.',
+              text: 'Executable' }) : null),
           meta ? h('span', { class: 'file-meta', text: meta }) : null),
-        h('div', { class: 'file-actions' }, previewBtn, copyButton(() => fileContent(cid, f), `Copy ${f.name}`, 'btn'), download)),
+        h('div', { class: 'file-actions' }, previewBtn, copyBtn, download)),
       f.description ? h('p', { class: 'file-desc', text: f.description }) : null,
+      hash,
       preview);
   }
 

@@ -11,6 +11,9 @@ reset_windows_vm.py is its partner for throwing kept state away.
 
 from __future__ import annotations
 
+import base64
+import binascii
+
 from perseus.tools import ToolFailure, tool
 
 LANGS = ("python", "node", "powershell", "cmd", "csharp")
@@ -33,8 +36,31 @@ DESCRIPTION = (
     "Programs run as a local administrator over SSH with no visible desktop, so GUI windows never appear "
     "and anything that waits for keyboard input hangs; give input through stdin. "
     "Returns the outcome (ok, compile_error, runtime_error or timeout), the exit code, stdout and stderr, "
-    "plus any files listed in `collect`."
+    "plus any files listed in `collect`. Each collected file gets a ref such as \"windows:publish/app.exe\": "
+    "to give the user a file the program built (an .exe, .dll, .zip, image or any other file), collect its path "
+    "and pass that ref to output_file as `source`."
 )
+REF_PREFIX = "windows"
+
+
+def _ref(path: str) -> str:
+    return f"{REF_PREFIX}:{path.replace(chr(92), '/').lstrip('/')}"
+
+
+def take_outputs(files: list[dict]) -> list[dict]:
+    """The collected files' exact bytes for the engine (output_file source=), removed from `files` in place."""
+    outputs = []
+    for f in files:
+        b64 = f.pop("b64", None)
+        if not isinstance(b64, str):
+            continue
+        try:
+            data = base64.b64decode(b64, validate=True)
+        except (binascii.Error, ValueError):
+            continue
+        f["ref"] = _ref(f["path"])
+        outputs.append({"ref": f["ref"], "data": data})
+    return outputs
 
 
 def _count(text: str) -> int:
@@ -81,15 +107,18 @@ def render(r: dict) -> str:
     if r.get("output_cut"):
         lines.append("(output was longer than the limit; the middle was cut)")
     for f in r.get("files") or []:
+        give = (f"; give it to the user with output_file source=\"{f['ref']}\"" if f.get("ref")
+                else "; too large to hand to the user (over [windows_rce] max_download_mb)" if f.get("too_large")
+                else "")
         if f.get("binary"):
-            lines.append(f"collected {f['path']}: binary, {f['bytes']:,} bytes (not shown)")
+            lines.append(f"collected {f['path']}: binary, {f['bytes']:,} bytes (not shown){give}")
         elif f.get("omitted"):
-            lines.append(f"collected {f['path']}: {f['bytes']:,} bytes (not shown: over the collect limit)")
+            lines.append(f"collected {f['path']}: {f['bytes']:,} bytes (not shown: over the collect limit){give}")
         else:
             text = f.get("text") or ""
             if len(text) > MAX_FILE_CHARS_FOR_MODEL:
                 text = text[:MAX_FILE_CHARS_FOR_MODEL] + "\n… (cut)"
-            lines.append(f"collected {f['path']} ({f['bytes']:,} bytes{', cut' if f.get('cut') else ''}):\n{text}")
+            lines.append(f"collected {f['path']} ({f['bytes']:,} bytes{', cut' if f.get('cut') else ''}{give}):\n{text}")
     if r.get("missing"):
         lines.append("not found for collect: " + ", ".join(r["missing"]))
     lines.append("The VM kept its state for your next call." if r.get("vm_state") == "kept"
@@ -130,6 +159,9 @@ def feed_view(args: dict, r: dict) -> dict:
     for f in r.get("files") or []:
         if f.get("text"):
             sections.append({"title": f"Collected · {f['path']}", "text": f["text"]})
+        elif f.get("binary"):
+            sections.append({"title": f"Collected · {f['path']}",
+                             "text": f"binary, {f['bytes']:,} bytes" + (f"\nref {f['ref']}" if f.get("ref") else "")})
     return {"pill": pill, "tone": tone, "summary": summary, "headline": headline(r),
             "detail": " · ".join(detail), "sections": sections}
 
@@ -154,7 +186,9 @@ def feed_view(args: dict, r: dict) -> dict:
                             "description": "Keep the VM as this run leaves it, for a follow-up call."},
           "collect": {"type": "array", "maxItems": 10, "default": [],
                       "items": {"type": "string", "maxLength": 300},
-                      "description": "Relative paths of files the program writes, to read back after the run."}},
+                      "description": "Relative paths of files the program writes or builds (text or binary, "
+                                     "e.g. \"bin/Release/net10.0/win-x64/publish/app.exe\"), to read back after "
+                                     "the run and hand to the user with output_file."}},
           "required": ["language", "code"]},
       requires="windows_rce", untrusted=True, timeout_s=1700)
 def run_windows_code(ctx, language: str, code: str, files: dict | None = None, command: str = "", stdin: str = "",
@@ -168,6 +202,10 @@ def run_windows_code(ctx, language: str, code: str, files: dict | None = None, c
     if timeout_s > limit:
         raise ToolFailure(f"timeout_s can be at most {limit} on this VM")
     r = ctx.windows.run(args)
-    return {"language": language, "status": r.get("status"), "exit_code": r.get("exit_code"),
-            "seconds": r.get("seconds"), "text": render(r), "feed": feed_view(args, r)}
+    outputs = take_outputs(r.get("files") or [])      # the bytes go to the engine, never to the model
+    result = {"language": language, "status": r.get("status"), "exit_code": r.get("exit_code"),
+              "seconds": r.get("seconds"), "text": render(r), "feed": feed_view(args, r)}
+    if outputs:
+        result["outputs"] = outputs
+    return result
 

@@ -230,6 +230,7 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "run_timeout_s": Key((int,), 120, check=_range(1, 600)),
         "max_output_kb": Key((int,), 64, check=_range(4, 1024)),
         "max_collect_kb": Key((int,), 512, check=_range(0, 8192)),
+        "max_download_mb": Key((int,), 64, check=_range(0, 128)),
         "idle_revert_s": Key((int,), 600, check=_range(30, 86400)),
     },
 }

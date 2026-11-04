@@ -13,6 +13,8 @@ import urllib.request
 
 from perseus.tools import ToolFailure
 
+MAX_RESPONSE = 192 * 1024 * 1024   # a run result, with collected files' bytes as base64
+
 # what the model is told when the VM or its API fails (not the program)
 MESSAGES = {
     "unavailable": "the Windows VM is unreachable right now (its API or tunnel is down); "
@@ -39,7 +41,7 @@ class WindowsClient:
                                               "Content-Type": "application/json"})
         try:
             with self._opener.open(req, timeout=timeout) as resp:
-                return resp.status, json.loads(resp.read(16 * 1024 * 1024) or b"{}")
+                return resp.status, json.loads(resp.read(MAX_RESPONSE) or b"{}")
         except urllib.error.HTTPError as e:
             try:
                 return e.code, json.loads(e.read(1024 * 1024) or b"{}")

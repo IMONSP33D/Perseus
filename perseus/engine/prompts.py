@@ -27,7 +27,9 @@ def system_prompt(tool_names: list[str], depth_limit: int, untrusted: bool | Non
     if "output_file" in tool_names:
         lines.append("When the user asks for a file, or wants Markdown or code as raw text rather than rendered in "
                      "the chat, deliver it with output_file (one call per file; several files are fine) and say in a sentence what you "
-                     "made; don't paste the same content into your answer.")
+                     "made; don't paste the same content into your answer. For a file a program built or wrote "
+                     "(an .exe, a .zip, an image, any binary), collect it in that run and pass the ref the run "
+                     "reports as output_file's source; never put binary data in content.")
     if web:
         lines += [
             f"Web access is read-only and limited to {depth_limit} lookups (searches plus page reads) per answer. "

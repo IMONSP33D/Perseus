@@ -14,6 +14,7 @@ Every step lands in the tool feed. Refused calls are never executed.
 from __future__ import annotations
 
 import concurrent.futures
+import dataclasses
 import json
 import re
 import threading
@@ -22,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from perseus.engine.feed import Feed, ToolEvent, clean_feed, clean_file, summarize_args
+from perseus.engine.outputs import Outputs
 from perseus.model.thinksplit import RETRACT
 from perseus.safety.gateway import GatewayError
 from perseus.safety.netpolicy import Blocked
@@ -101,6 +103,7 @@ class Engine:
     settings: EngineSettings = field(default_factory=EngineSettings)
     recorder: Any = None                      # session.Recorder
     tool_override: Callable[[str, dict], Any] | None = None   # replay: recorded results instead of running tools
+    outputs: Outputs = field(default_factory=Outputs)        # files tools brought back this chat (output_file source=)
     _stop: threading.Event = field(default_factory=threading.Event)
     _close: threading.Event = field(default_factory=threading.Event)
     thought_tokens: int = 0                   # this answer's thinking so far (the dashboard's live counter)
@@ -409,7 +412,8 @@ class Engine:
             return recorded
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"tool-{tool.name}")
         try:
-            return pool.submit(tool.fn, self.ctx, **args).result(timeout=tool.timeout_s)
+            ctx = dataclasses.replace(self.ctx, outputs=self.outputs)   # the context is shared; the files are this chat's
+            return pool.submit(tool.fn, ctx, **args).result(timeout=tool.timeout_s)
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
@@ -422,6 +426,12 @@ class Engine:
             view = clean_feed(result.pop("feed"))
             if view:
                 meta["feed"] = view
+        if isinstance(result, dict) and "outputs" in result:
+            # files the tool brought back: their bytes stay here for output_file(source=...), never with the model
+            result = dict(result)
+            for o in result.pop("outputs") or []:
+                if isinstance(o, dict):
+                    self.outputs.add(o.get("ref"), o.get("data"), tool.name)
         if isinstance(result, dict) and "file" in result:
             # a file for the user (output_file): shown in the chat as a download, never part of what the model is told
             result = dict(result)

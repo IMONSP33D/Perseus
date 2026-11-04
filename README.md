@@ -266,7 +266,7 @@ These are what the model can do while it answers. Open Agent Tools in the sideba
 | `fetch_url` | Reads a web page, through Perseus's read-only web gateway |
 | `calculator` | Exact arithmetic, so the model doesn't have to guess |
 | `current_time` | The current date and time |
-| `output_file` | Gives you a file (Markdown, code, CSV, …) to preview, copy or download, instead of pasting it into the answer. It can give several files in one answer. |
+| `output_file` | Gives you a file to download, instead of pasting it into the answer: text it writes (Markdown, code, CSV, …, which you can also preview and copy), or a binary a program built, such as an `.exe` from the Windows VM. It can give several files in one answer. |
 | `run_code` | Runs a program in a fresh cloud sandbox. Only shown once the [code runner](#the-code-runner) is set up. |
 
 Addon tools that ship with Perseus but stay hidden until you set them up:
@@ -339,6 +339,8 @@ To check where your code actually runs, run `~/.local/bin/uv run python -m perse
 
 `run_windows_code` runs the model's code in a real Windows 11 VM, for anything Linux can't do: Win32 and .NET APIs, the registry, PowerShell, cmd, Windows DLLs. It talks to the **WindowsRCE sandbox API**, which runs on a Windows PC with VirtualBox and puts the VM back on a clean snapshot after every run. The model gets the outcome (`ok`, `compile_error`, `runtime_error` or `timeout`), the exit code, stdout and stderr, and any files it asked to collect.
 
+Collected files come back as exact bytes, text or binary. To give you something the program built, the model collects its path (say `bin/Release/net10.0/win-x64/publish/app.exe`) and passes the ref the run reports (`windows:bin/Release/net10.0/win-x64/publish/app.exe`) to `output_file`. The file then shows up under the answer as a download card with its size and SHA-256, marked as an executable when it runs code. Unsigned executables get a warning from your browser or SmartScreen when you download or open them; that's expected for a fresh build.
+
 Languages: Python, Node.js, Windows PowerShell 5.1, cmd and C# (.NET 10).
 
 ```
@@ -376,7 +378,8 @@ The settings in `[windows_rce]`:
 | `allow_keep_state` | `true` | Lets the model keep the VM's state between calls (install once, then use). Kept state is thrown away by `reset_windows_vm`, after `idle_revert_s` unused, and when Perseus stops |
 | `run_timeout_s` | `120` | The longest run the model may ask for (up to 600) |
 | `max_output_kb` | `64` | stdout + stderr kept per run |
-| `max_collect_kb` | `512` | Total size of files a run can hand back |
+| `max_collect_kb` | `512` | Total size of collected text the model can read per run |
+| `max_download_mb` | `64` | Total size of collected files (text or binary) a run can hand to `output_file` for you to download (up to 128; `0` turns downloads off) |
 | `idle_revert_s` | `600` | How long a VM with kept state may sit unused before it's reset |
 
 Programs run as a local administrator over SSH with no visible desktop, so GUI windows never appear and anything waiting for keyboard input hangs until the timeout. The API runs one job at a time; other calls wait their turn. Every run is logged in `logs/windows_rce.log` with its job id and outcome, never the code or its output.

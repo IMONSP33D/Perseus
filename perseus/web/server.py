@@ -331,13 +331,20 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _file(self, f: dict):
         """A file the model handed over: always a download (never rendered here), so an HTML or SVG
-        file can't run in the dashboard's origin. The dashboard reads it with fetch() for previews."""
+        file can't run in the dashboard's origin. The dashboard reads text files with fetch() for previews.
+        Binary files (an .exe a program built) are sent as their exact bytes, with no charset."""
         name = re.sub(r'[^A-Za-z0-9._\- ]', "_", f["name"]) or "file.txt"
-        mime = f.get("mime") or "text/plain"
+        data = f.get("data")
+        binary = isinstance(data, (bytes, bytearray))
+        mime = f.get("mime") or ("application/octet-stream" if binary else "text/plain")
         if not re.fullmatch(r"[a-z]+/[a-z0-9.+\-]+", mime):
-            mime = "text/plain"
-        self._send(200, f["content"].encode("utf-8"), f"{mime}; charset=utf-8",
-                   {"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+            mime = "application/octet-stream" if binary else "text/plain"
+        headers = {"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"}
+        if isinstance(f.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", f["sha256"]):
+            headers["X-Content-SHA256"] = f["sha256"]
+        if binary:
+            return self._send(200, bytes(data), mime, headers)
+        self._send(200, f["content"].encode("utf-8"), f"{mime}; charset=utf-8", headers)
 
     def _apply_context(self, tokens):
         try:

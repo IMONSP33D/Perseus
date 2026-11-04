@@ -30,6 +30,9 @@ Reserved keys in a returned dict:
   status   an int is shown as the HTTP status in the feed
   feed     a card view for the tool feed (see engine.feed.clean_feed); never sent to the model
   file     a file handed to the user (see engine.feed.clean_file); never sent to the model
+  outputs  files the tool brought back, [{"ref": "windows:dist/app.exe", "data": b"..."}]: the engine keeps
+           the bytes for this chat (engine.outputs) so output_file(source=ref) can deliver them; never sent
+           to the model, so say each file's ref in the result text instead
 
 A tool that needs an engine-provided capability says so with `requires=` (for
 example `requires="sandbox"`). It is offered to the model, listed in the
@@ -91,6 +94,7 @@ class ToolContext:
     engines: list[str] | None = None   # search engines chosen in the dashboard; None = all configured
     sandbox: Any = None          # perseus.sandbox.client.SandboxClient, or None when the code runner is off
     windows: Any = None          # perseus.addons.windows_rce.client.WindowsClient, or None when the RCE addon is off
+    outputs: Any = None          # perseus.engine.outputs.Outputs: this chat's collected files (set per call by the engine)
 
 
 @dataclass

@@ -7,11 +7,12 @@ forward them over SSE in Phase 1).
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable
 
 STATUSES = ("running", "ok", "error", "blocked", "refused", "cached", "stopped")
@@ -39,7 +40,12 @@ class ToolEvent:
     file: dict | None = None        # a file the tool handed the user (see clean_file); shown in the chat, never sent to the model
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        """JSON-ready. A binary file's bytes stay out (the download serves them); everything else is kept."""
+        if self.file is None or "data" not in self.file:
+            return asdict(self)
+        d = asdict(replace(self, file=None))
+        d["file"] = {k: v for k, v in self.file.items() if k != "data"}
+        return d
 
 
 class Feed:
@@ -120,28 +126,46 @@ def clean_feed(view: Any) -> dict | None:
 
 
 FILE_MAX_CHARS = 500_000
+FILE_MAX_BYTES = 64 * 1024 * 1024
 
 
 def clean_file(f: Any) -> dict | None:
-    """A file a tool handed the user (output_file): name, type and the text itself, sizes capped.
+    """A file a tool handed the user (output_file), sizes capped. Either text or exact bytes:
 
-        name         flat file name, e.g. "notes.md"
-        content      the complete text of the file
+        name         flat file name, e.g. "notes.md" or "app.exe"
+        content      the complete text of a text file
+        data         the exact bytes of a binary file (never JSON-encoded; served by the download)
         mime         its MIME type, used for the download
-        language     a label for the preview, e.g. "python"
+        language     a label for the preview, e.g. "python" (text files)
         description  an optional one-line note for the file card
+        source       where the bytes came from, e.g. "windows:publish/app.exe"
+        executable   true for files that run code when opened (.exe, .dll, .ps1, ...): the card warns
+    Every file gets bytes and sha256; text files get lines, binary files binary: true.
     """
-    if not isinstance(f, dict) or not isinstance(f.get("name"), str) or not isinstance(f.get("content"), str):
+    if not isinstance(f, dict) or not isinstance(f.get("name"), str):
         return None
     name = f["name"].replace("/", "_").replace("\\", "_").strip()[:120]
     if not name:
         return None
-    content = f["content"][:FILE_MAX_CHARS]
-    out = {"name": name, "content": content, "bytes": len(content.encode("utf-8")), "lines": _lines(content)}
-    for key, cap in (("mime", 80), ("language", 40), ("description", 200)):
+    if isinstance(f.get("data"), (bytes, bytearray)):
+        data = bytes(f["data"])
+        if len(data) > FILE_MAX_BYTES:
+            return None
+        out = {"name": name, "data": data, "binary": True, "bytes": len(data),
+               "sha256": hashlib.sha256(data).hexdigest()}
+    elif isinstance(f.get("content"), str):
+        content = f["content"][:FILE_MAX_CHARS]
+        raw = content.encode("utf-8")
+        out = {"name": name, "content": content, "bytes": len(raw), "lines": _lines(content),
+               "sha256": hashlib.sha256(raw).hexdigest()}
+    else:
+        return None
+    for key, cap in (("mime", 80), ("language", 40), ("description", 200), ("source", 620)):
         if isinstance(f.get(key), str) and f[key].strip():
             out[key] = f[key].strip()[:cap]
-    out.setdefault("mime", "text/plain")
+    if f.get("executable") is True:
+        out["executable"] = True
+    out.setdefault("mime", "application/octet-stream" if out.get("binary") else "text/plain")
     return out
 
 

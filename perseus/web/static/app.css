@@ -289,6 +289,10 @@ textarea::placeholder, input::placeholder { color: var(--faint); }
 .file-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .file-desc { margin: 0; padding: 0 14px 12px; font-size: 13px; color: var(--muted); }
 .file-preview .code-block { border-radius: 0; }
+.file-exec { margin-left: 8px; vertical-align: 1px; font-family: 'Schibsted Grotesk', system-ui, sans-serif; }
+.file-hash { margin: 0; padding: 0 14px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.file-hash code { font-size: 12px; color: var(--ink); }
+.file-hash-copy { min-height: 0; height: 26px; padding: 0 8px; font-size: 12px; }
 
 .msg-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; font-size: 13px; color: var(--muted); }
 .msg-foot .err { color: var(--blocked); }

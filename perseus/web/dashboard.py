@@ -109,9 +109,9 @@ def event_dict(ev: ToolEvent) -> dict:
 
 
 def file_summary(ev: ToolEvent) -> dict:
-    """A file card as the dashboard lists it: everything but the content."""
+    """A file card as the dashboard lists it: everything but the content (text) or the bytes (binary)."""
     f = ev.file or {}
-    return {"id": ev.id, **{k: v for k, v in f.items() if k != "content"}}
+    return {"id": ev.id, **{k: v for k, v in f.items() if k not in ("content", "data")}}
 
 
 @dataclass
@@ -433,7 +433,7 @@ class Dashboard:
         chat.engine.close_out()
 
     def file(self, cid: str, event_id: str) -> dict:
-        """A file a tool handed the user in this chat (output_file), with its content."""
+        """A file a tool handed the user in this chat (output_file), with its content or bytes."""
         chat = self.get(cid)
         try:
             n = int(event_id)
